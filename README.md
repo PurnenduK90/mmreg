@@ -85,6 +85,8 @@ MIT
 - Integration tests and example scripts
 - Documentation improvements
 - Support Windows machine
+- Setup Tests
+- Setup release
 
 ### Future Directions
 - Optional async API for high-performance use

@@ -6,7 +6,7 @@ edition = "2024"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
 description = "Safe, concurrent 32-bit memory-mapped IO register access for Rust. Library and CLI for embedded and PC (linux) platforms."
 license = "MIT"
-repository = "https://github.com/yourusername/mmreg"
+repository = "https://github.com/PurnenduK90/mmreg"
 
 [dependencies]
 libc = "0.2" # For low-level system calls

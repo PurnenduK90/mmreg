@@ -1,0 +1,37 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# Generated documentation
+/doc/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Backup files
+*.bak
+*.orig
+
+# Test and temporary files
+*.tmp
+*.log
+
+# OS-specific files
+Thumbs.db
+desktop.ini
+
+# Package files
+*.crate
+/package/
+
+# Incremental compilation
+**/*.rs.bk
+*.pdb
+
+# Flycheck
+/flycheck*/

@@ -54,8 +54,13 @@ write_register_at(0x4000_0000, 0xDEADBEEF)?;
 
 ## Cross-Compilation Targets
 
+
 The list of supported cross-compilation targets is maintained in a single file: `targets.txt`.
 
+- Requires WSL/Ubuntu with buildtools for compilation.
+    ```
+    sudo apt update ; sudo apt install -y build-essential
+    ```
 - **Do not** edit the Makefile or config files to add/remove targets; always update `targets.txt`.
 - The Makefile and build automation read from `targets.txt` to ensure consistency.
 - Example contents of `targets.txt`:
@@ -64,10 +69,7 @@ The list of supported cross-compilation targets is maintained in a single file: 
 x86_64-unknown-linux-gnu
 i686-unknown-linux-gnu
 armv7-unknown-linux-gnueabihf
-aarch64-unknown-linux-gnu
-mips-unknown-linux-gnu
-powerpc-unknown-linux-gnu
-riscv64gc-unknown-linux-gnu
+aarch64-unknown-linux-gnu 
 ```
 
 To add or remove a target, simply edit `targets.txt` and rerun your build commands.
@@ -84,9 +86,14 @@ MIT
 - More flexible bitfield/subregister API
 - Integration tests and example scripts
 - Documentation improvements
-- Support Windows machine
+- Support Windows machine build
 - Setup Tests
 - Setup release
+- Add/Verify Targets
+    - mips-unknown-linux-gnu
+    - powerpc-unknown-linux-gnu
+    - riscv64gc-unknown-linux-gnu
+
 
 ### Future Directions
 - Optional async API for high-performance use

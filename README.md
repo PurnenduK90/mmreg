@@ -77,23 +77,28 @@ To add or remove a target, simply edit `targets.txt` and rerun your build comman
 ## License
 MIT
 
+## issues
+- [ ] Doesn't compile on windows
+- [ ] wsl is unable to publish
+ 
 ## mmreg Roadmap
 
 ### Planned Features (Not in sequence)
-- Support for 8, 16, 64, and larger register widths
-- Batch/group register operations
-- Improved error handling and diagnostics
-- More flexible bitfield/subregister API
-- Integration tests and example scripts
-- Documentation improvements
-- Support Windows machine build
-- Setup Tests
-- Setup release
-- Add/Verify Targets
-    - mips-unknown-linux-gnu
-    - powerpc-unknown-linux-gnu
-    - riscv64gc-unknown-linux-gnu
+- [ ] Support for 8, 16, 64, and larger register widths
+- [ ] Batch/group register operations
+- [ ] Improved error handling and diagnostics
+- [ ] More flexible bitfield/subregister API
+- [ ] Integration tests and example scripts
+- [ ] Documentation improvements
+- [ ] Support Windows machine build
+- [ ] Setup Tests
+- [ ] Setup release
+- [ ] Add/Verify Targets
+    - [ ] mips-unknown-linux-gnu
+    - [ ] powerpc-unknown-linux-gnu
+    - [ ] riscv64gc-unknown-linux-gnu
 
 
 ### Future Directions
-- Optional async API for high-performance use
+- [ ] Optional async API for high-performance use
+- [ ] Optional Auto timeout

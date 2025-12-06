@@ -15,7 +15,7 @@ fn main() {
     }
 
     let command = &args[1];
-    let address = match u64::from_str_radix(&args[2].trim_start_matches("0x"), 16) {
+    let address = match u64::from_str_radix(args[2].trim_start_matches("0x"), 16) {
         Ok(addr) => addr,
         Err(_) => {
             eprintln!("Invalid address: {}", args[2]);
@@ -36,7 +36,7 @@ fn main() {
                 print_usage();
                 process::exit(1);
             }
-            let value = match u32::from_str_radix(&args[3].trim_start_matches("0x"), 16) {
+            let value = match u32::from_str_radix(args[3].trim_start_matches("0x"), 16) {
                 Ok(v) => v,
                 Err(_) => {
                     eprintln!("Invalid value: {}", args[3]);

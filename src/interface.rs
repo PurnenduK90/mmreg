@@ -67,6 +67,7 @@ impl Interface {
         // Acquire lock
         let lock_file = match OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(LOCK_FILE_PATH)
@@ -110,16 +111,11 @@ impl Interface {
             self.file = None;
         }
         // Release lock
-        if let Some(lock_file) = self.lock_file.take() {
-            if let Err(e) = fs2::FileExt::unlock(&lock_file) {
-                eprintln!("Warning: Failed to release lock: {}", e);
-            }
+        if let Some(lock_file) = self.lock_file.take()
+            && let Err(e) = fs2::FileExt::unlock(&lock_file)
+        {
+            eprintln!("Warning: Failed to release lock: {}", e);
         }
-    }
-
-    /// Cleans up resources on drop (unmaps and unlocks).
-    pub fn drop(&mut self) {
-        self.unmap();
     }
 
     /// Get a mutable reference to a register by name

@@ -1,6 +1,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self};
+
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
+
 use std::ptr;
 
 // --- Common MMAP Helper (Read/Write) ---
@@ -13,7 +16,7 @@ pub(crate) fn mmap_register(
 ) -> Result<(File, *mut u8, isize), String> {
     // 1. Calculate page alignment
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
-    if page_size <= 0 {
+    if page_size == 0 {
         return Err("Could not determine system page size.".to_string());
     }
     let page_mask = !(page_size - 1);

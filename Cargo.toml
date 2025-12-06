@@ -2,11 +2,14 @@
 [package]
 name = "mmreg"
 version = "0.1.1"
-edition = "2024"
+edition = "2021"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
 description = "Safe, concurrent 32-bit memory-mapped IO register access for Rust. Library and CLI for embedded and PC (linux) platforms."
 license = "MIT"
 repository = "https://github.com/PurnenduK90/mmreg"
+readme = "README.md"
+keywords = ["embedded", "mmio", "registers", "hardware", "memory-mapped"]
+categories = ["embedded", "hardware-support"]
 
 [dependencies]
 libc = "0.2" # For low-level system calls

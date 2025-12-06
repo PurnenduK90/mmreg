@@ -24,7 +24,6 @@ pub struct Interface {
 }
 
 impl Interface {
-        
     /// Create a new Interface for a set of registers at a given base address.
     ///
     /// # Example
@@ -77,7 +76,7 @@ impl Interface {
                 return Err(format!(
                     "Failed to open lock file ({}): {}",
                     LOCK_FILE_PATH, e
-                ))
+                ));
             }
         };
         match fs2::FileExt::lock_exclusive(&lock_file) {
@@ -219,10 +218,15 @@ impl Interface {
                 // Find subregister, clone it to avoid borrow conflict
                 let sub = match reg.get_subregister(sub_name) {
                     Some(sub) => sub.clone(),
-                    None => return Err(format!("SubRegister '{}' not found in Register '{}'", sub_name, reg_name)),
+                    None => {
+                        return Err(format!(
+                            "SubRegister '{}' not found in Register '{}'",
+                            sub_name, reg_name
+                        ));
+                    }
                 };
                 reg.read_subregister(&sub, true, Some(ptr), offset)
-            },
+            }
             (None, _) => Err(format!("Register '{}' not found", reg_name)),
             (_, None) => Err("Mapped pointer not available".to_string()),
         };
@@ -244,7 +248,12 @@ impl Interface {
     /// ```rust
     /// iface.write_subregister("reg", "status", 0x1)?;
     /// ```
-    pub fn write_subregister(&mut self, reg_name: &str, sub_name: &str, value: u32) -> Result<(), String> {
+    pub fn write_subregister(
+        &mut self,
+        reg_name: &str,
+        sub_name: &str,
+        value: u32,
+    ) -> Result<(), String> {
         let mut did_map = false;
         if !self.is_mapped() {
             self.map()?;
@@ -257,10 +266,15 @@ impl Interface {
                 // Find subregister, clone it to avoid borrow conflict
                 let sub = match reg.get_subregister(sub_name) {
                     Some(sub) => sub.clone(),
-                    None => return Err(format!("SubRegister '{}' not found in Register '{}'", sub_name, reg_name)),
+                    None => {
+                        return Err(format!(
+                            "SubRegister '{}' not found in Register '{}'",
+                            sub_name, reg_name
+                        ));
+                    }
                 };
                 reg.write_subregister(&sub, value, true, Some(ptr), offset)
-            },
+            }
             (None, _) => Err(format!("Register '{}' not found", reg_name)),
             (_, None) => Err("Mapped pointer not available".to_string()),
         };
@@ -286,14 +300,14 @@ impl Interface {
     /// ```
     pub fn parse_subregister(&self, reg_name: &str, sub_name: &str) -> Result<u32, String> {
         match self.registers.iter().find(|reg| reg.name == reg_name) {
-            Some(reg) => {
-                match reg.get_subregister(sub_name) {
-                    Some(sub) => Ok((reg.raw & sub.mask()) >> sub.lsb),
-                    None => Err(format!("SubRegister '{}' not found in Register '{}'", sub_name, reg_name)),
-                }
+            Some(reg) => match reg.get_subregister(sub_name) {
+                Some(sub) => Ok((reg.raw & sub.mask()) >> sub.lsb),
+                None => Err(format!(
+                    "SubRegister '{}' not found in Register '{}'",
+                    sub_name, reg_name
+                )),
             },
             None => Err(format!("Register '{}' not found", reg_name)),
         }
     }
-
 }

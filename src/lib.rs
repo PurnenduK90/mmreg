@@ -16,8 +16,8 @@
 //! ```
 
 mod interface;
-mod register;
 mod memregs;
+mod register;
 
 /// The main interface for managing mapped registers and safe access.
 ///
@@ -44,13 +44,13 @@ pub use register::{Register, SubRegister};
 /// println!("Value: 0x{:08X}", value);
 /// ```
 pub fn read_register_at(address: u64) -> Result<u32, String> {
-	let mut interface = crate::Interface::new(
-		"devmem",
-		address,
-		4,
-		vec![crate::Register::new("reg", 0, vec![])]
-	);
-	interface.read_register("reg")
+    let mut interface = crate::Interface::new(
+        "devmem",
+        address,
+        4,
+        vec![crate::Register::new("reg", 0, vec![])],
+    );
+    interface.read_register("reg")
 }
 
 /// Writes a 32-bit value to a physical address using /dev/mem.
@@ -69,12 +69,11 @@ pub fn read_register_at(address: u64) -> Result<u32, String> {
 /// println!("Wrote value.");
 /// ```
 pub fn write_register_at(address: u64, value: u32) -> Result<(), String> {
-	let mut interface = crate::Interface::new(
-		"devmem",
-		address,
-		4,
-		vec![crate::Register::new("reg", 0, vec![])]
-	);
-	interface.write_register("reg", value)
+    let mut interface = crate::Interface::new(
+        "devmem",
+        address,
+        4,
+        vec![crate::Register::new("reg", 0, vec![])],
+    );
+    interface.write_register("reg", value)
 }
-

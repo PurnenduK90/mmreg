@@ -40,7 +40,6 @@ pub struct SubRegister {
 }
 
 impl Register {
-
     /// Creates a new 32-bit register.
     ///
     /// # Arguments
@@ -69,7 +68,12 @@ impl Register {
     }
 
     /// Write a value to the register, using mapped memory if available
-    pub(crate) fn write(&mut self, map_ptr: *mut u8, iface_offset: isize, value: u32) -> Result<(), String> {
+    pub(crate) fn write(
+        &mut self,
+        map_ptr: *mut u8,
+        iface_offset: isize,
+        value: u32,
+    ) -> Result<(), String> {
         write_u32_mapped(map_ptr, iface_offset, self.offset, value);
         self.raw = value;
         Ok(())
@@ -82,7 +86,13 @@ impl Register {
 
     /// Read a subregister value using its mask
     /// If refresh is true, update self.raw from mapped memory before reading
-    pub(crate) fn read_subregister(&mut self, sub: &SubRegister, refresh: bool, map_ptr: Option<*mut u8>, iface_offset: isize) -> Result<u32, String> {
+    pub(crate) fn read_subregister(
+        &mut self,
+        sub: &SubRegister,
+        refresh: bool,
+        map_ptr: Option<*mut u8>,
+        iface_offset: isize,
+    ) -> Result<u32, String> {
         if refresh {
             if let Some(ptr) = map_ptr {
                 self.read(ptr, iface_offset)?;
@@ -96,7 +106,14 @@ impl Register {
 
     /// Write a value to a subregister and write back to memory
     /// If refresh is true, update self.raw from mapped memory before writing
-    pub(crate) fn write_subregister(&mut self, sub: &SubRegister, value: u32, refresh: bool, map_ptr: Option<*mut u8>, iface_offset: isize) -> Result<(), String> {
+    pub(crate) fn write_subregister(
+        &mut self,
+        sub: &SubRegister,
+        value: u32,
+        refresh: bool,
+        map_ptr: Option<*mut u8>,
+        iface_offset: isize,
+    ) -> Result<(), String> {
         if refresh {
             if let Some(ptr) = map_ptr {
                 self.read(ptr, iface_offset)?;

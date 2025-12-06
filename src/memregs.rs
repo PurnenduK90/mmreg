@@ -3,12 +3,14 @@ use std::io::{self};
 use std::os::unix::io::AsRawFd;
 use std::ptr;
 
-
 // --- Common MMAP Helper (Read/Write) ---
 
 /// Maps the physical memory page containing the register address into the process's virtual space.
 /// Returns the file descriptor and the virtual memory pointer.
-pub(crate) fn mmap_register(address: u64, map_size: usize) -> Result<(File, *mut u8, isize), String> {
+pub(crate) fn mmap_register(
+    address: u64,
+    map_size: usize,
+) -> Result<(File, *mut u8, isize), String> {
     // 1. Calculate page alignment
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
     if page_size <= 0 {
@@ -62,5 +64,7 @@ pub(crate) fn read_u32_mapped(ptr: *mut u8, iface_offset: isize, reg_offset: u32
 /// Safely write a 32-bit value to mapped memory
 pub(crate) fn write_u32_mapped(ptr: *mut u8, iface_offset: isize, reg_offset: u32, value: u32) {
     let reg_ptr = unsafe { ptr.offset(iface_offset + reg_offset as isize) } as *mut u32;
-    unsafe { std::ptr::write_volatile(reg_ptr, value); }
+    unsafe {
+        std::ptr::write_volatile(reg_ptr, value);
+    }
 }

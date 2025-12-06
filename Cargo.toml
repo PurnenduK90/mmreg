@@ -2,7 +2,7 @@
 [package]
 name = "mmreg"
 version = "0.1.1"
-edition = "2021"
+edition = "2024"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
 description = "Safe, concurrent 32-bit memory-mapped IO register access for Rust. Library and CLI for embedded and PC (linux) platforms."
 license = "MIT"

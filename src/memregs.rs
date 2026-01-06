@@ -5,14 +5,9 @@ use std::io::{self};
 use std::os::unix::io::AsRawFd;
 
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-// Global flag to track if a bus error occurred
-static BUS_ERROR_FLAG: AtomicBool = AtomicBool::new(false);
 
 // Signal handler for SIGBUS and SIGSEGV
 extern "C" fn bus_error_handler(_signal: libc::c_int) {
-    BUS_ERROR_FLAG.store(true, Ordering::SeqCst);
     // Exit the process immediately to prevent kernel hang
     unsafe {
         libc::_exit(1);
@@ -20,27 +15,23 @@ extern "C" fn bus_error_handler(_signal: libc::c_int) {
 }
 
 // Set up signal handlers for SIGBUS and SIGSEGV
-fn setup_bus_error_handlers() -> Result<(libc::sigaction, libc::sigaction), String> {
+fn setup_bus_error_handlers() -> Result<(), String> {
     unsafe {
         let mut new_action: libc::sigaction = std::mem::zeroed();
         new_action.sa_sigaction = bus_error_handler as usize;
         libc::sigemptyset(&mut new_action.sa_mask as *mut libc::sigset_t);
-        new_action.sa_flags = 0;
+        // Use SA_SIGINFO since we're using sa_sigaction
+        new_action.sa_flags = libc::SA_SIGINFO;
 
-        let mut old_sigbus: libc::sigaction = std::mem::zeroed();
-        let mut old_sigsegv: libc::sigaction = std::mem::zeroed();
-
-        if libc::sigaction(libc::SIGBUS, &new_action, &mut old_sigbus) != 0 {
+        if libc::sigaction(libc::SIGBUS, &new_action, ptr::null_mut()) != 0 {
             return Err("Failed to install SIGBUS handler".to_string());
         }
 
-        if libc::sigaction(libc::SIGSEGV, &new_action, &mut old_sigsegv) != 0 {
-            // Restore SIGBUS before returning
-            libc::sigaction(libc::SIGBUS, &old_sigbus, ptr::null_mut());
+        if libc::sigaction(libc::SIGSEGV, &new_action, ptr::null_mut()) != 0 {
             return Err("Failed to install SIGSEGV handler".to_string());
         }
 
-        Ok((old_sigbus, old_sigsegv))
+        Ok(())
     }
 }
 
@@ -55,15 +46,15 @@ fn check_memory_accessible_safe(ptr: *mut u8) -> Result<(), String> {
 
         if pid == 0 {
             // Child process: try to read the memory
-            // Set up alarm to prevent hanging
-            libc::alarm(2); // 2 second timeout
+            // Set up alarm to prevent hanging (2 second timeout)
+            libc::alarm(2);
 
-            // Set up signal handlers
+            // Set up signal handlers to catch bus errors
             if setup_bus_error_handlers().is_err() {
                 libc::_exit(1);
             }
 
-            // Try to read
+            // Try to read the memory
             let _value = std::ptr::read_volatile(ptr as *const u32);
 
             // If we got here, the access succeeded
@@ -157,6 +148,10 @@ pub(crate) fn munmap_register(map_ptr: *mut u8, map_size: usize) {
 }
 
 /// Safely read a 32-bit value from mapped memory with bus error protection
+///
+/// This function uses fork-based safety checking to prevent system hangs when accessing
+/// invalid memory addresses. The performance overhead is acceptable given the safety benefit
+/// of preventing kernel-level hangs from bus errors on unavailable register addresses.
 pub(crate) fn read_u32_mapped(
     ptr: *mut u8,
     iface_offset: isize,
@@ -173,6 +168,10 @@ pub(crate) fn read_u32_mapped(
 }
 
 /// Safely write a 32-bit value to mapped memory with bus error protection
+///
+/// This function uses fork-based safety checking to prevent system hangs when accessing
+/// invalid memory addresses. The performance overhead is acceptable given the safety benefit
+/// of preventing kernel-level hangs from bus errors on unavailable register addresses.
 pub(crate) fn write_u32_mapped(
     ptr: *mut u8,
     iface_offset: isize,

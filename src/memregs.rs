@@ -54,8 +54,8 @@ fn check_memory_accessible_safe(ptr: *mut u8) -> Result<(), String> {
                 libc::_exit(1);
             }
 
-            // Try to read the memory
-            let _value = std::ptr::read_volatile(ptr as *const u32);
+            // Try to read the memory (testing accessibility)
+            std::ptr::read_volatile(ptr as *const u32);
 
             // If we got here, the access succeeded
             libc::_exit(0);

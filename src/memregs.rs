@@ -18,10 +18,10 @@ extern "C" fn bus_error_handler(_signal: libc::c_int) {
 fn setup_bus_error_handlers() -> Result<(), String> {
     unsafe {
         let mut new_action: libc::sigaction = std::mem::zeroed();
-        new_action.sa_sigaction = bus_error_handler as usize;
+        // Use sa_handler (not sa_sigaction) since our handler has the simple signature
+        new_action.sa_sigaction = bus_error_handler as libc::sighandler_t;
         libc::sigemptyset(&mut new_action.sa_mask as *mut libc::sigset_t);
-        // Use SA_SIGINFO since we're using sa_sigaction
-        new_action.sa_flags = libc::SA_SIGINFO;
+        new_action.sa_flags = 0;
 
         if libc::sigaction(libc::SIGBUS, &new_action, ptr::null_mut()) != 0 {
             return Err("Failed to install SIGBUS handler".to_string());

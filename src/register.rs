@@ -62,7 +62,7 @@ impl Register {
     // All other methods are private to the crate
     /// Read the value of the register, using mapped memory if available
     pub(crate) fn read(&mut self, map_ptr: *mut u8, iface_offset: isize) -> Result<u32, String> {
-        let val = read_u32_mapped(map_ptr, iface_offset, self.offset)?;
+        let val = read_u32_mapped(map_ptr, iface_offset, self.offset);
         self.raw = val;
         Ok(val)
     }
@@ -74,7 +74,7 @@ impl Register {
         iface_offset: isize,
         value: u32,
     ) -> Result<(), String> {
-        write_u32_mapped(map_ptr, iface_offset, self.offset, value)?;
+        write_u32_mapped(map_ptr, iface_offset, self.offset, value);
         self.raw = value;
         Ok(())
     }

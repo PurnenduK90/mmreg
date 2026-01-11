@@ -16,11 +16,11 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     // Parse options
     let mut force_map = false;
     let mut cmd_idx = 1;
-    
+
     while cmd_idx < args.len() {
         match args[cmd_idx].as_str() {
             "-f" | "--force" => {

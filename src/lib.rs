@@ -15,10 +15,10 @@
 //! write_register_at(0x4000_0000, 0xDEADBEEF)?;
 //! ```
 
-mod interface;
 mod devmem;
-mod register;
+mod interface;
 mod memcheck;
+mod register;
 
 /// The main interface for managing mapped registers and safe access.
 ///
@@ -44,7 +44,7 @@ pub use register::{Register, SubRegister};
 /// ```rust
 /// let value = mmreg::read_register_at(0x4000_0000, false)?;
 /// println!("Value: 0x{:08X}", value);
-/// 
+///
 /// // Force read even if address validation fails
 /// let value = mmreg::read_register_at(0x4000_0000, true)?;
 /// ```
@@ -74,7 +74,7 @@ pub fn read_register_at(address: u64, force: bool) -> Result<u32, String> {
 /// ```rust
 /// mmreg::write_register_at(0x4000_0000, 0xDEADBEEF, false)?;
 /// println!("Wrote value.");
-/// 
+///
 /// // Force write even if address validation fails
 /// mmreg::write_register_at(0x4000_0000, 0xDEADBEEF, true)?;
 /// ```

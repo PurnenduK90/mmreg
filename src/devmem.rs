@@ -67,12 +67,12 @@ pub(crate) fn mmap_register(
     // - map_base as offset: Tells kernel which physical page to map
     let map_ptr = unsafe {
         libc::mmap(
-            ptr::null_mut(),                                    // Let kernel choose virtual address
-            map_size,                                           // Map this many bytes
-            libc::PROT_READ | libc::PROT_WRITE,                 // Read and write permissions
-            libc::MAP_SHARED,                                   // Shared mapping (physical memory)
-            fd,                                                 // File descriptor of /dev/mem
-            map_base as libc::off_t,                            // Physical page offset
+            ptr::null_mut(),                    // Let kernel choose virtual address
+            map_size,                           // Map this many bytes
+            libc::PROT_READ | libc::PROT_WRITE, // Read and write permissions
+            libc::MAP_SHARED,                   // Shared mapping (physical memory)
+            fd,                                 // File descriptor of /dev/mem
+            map_base as libc::off_t,            // Physical page offset
         )
     };
 

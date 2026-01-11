@@ -2,72 +2,73 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-/// Scans the sysfs UIO device directory for any UIO device that can access the given address.
-///
-/// UIO (Userspace I/O) devices expose hardware memory regions through `/dev/uioN` interfaces.
-/// This function searches for any UIO device that has mapped the target address, which indicates
-/// the address is serviceable by a UIO driver.
-///
-/// # Arguments
-/// * `target` - The physical address to check
-///
-/// # Returns
-/// * `Some((uio_path, device_name))` if a UIO device mapping this address is found
-///   - `uio_path`: Path to the UIO device file (e.g., "/dev/uio0")
-///   - `device_name`: Name of the UIO device (from sysfs)
-/// * `None` if no UIO device maps this address
-///
-/// # Technical Details
-/// For each UIO device in `/sys/class/uio/`, this function:
-/// 1. Reads the device name from `name` file
-/// 2. Checks the `maps/mapN/addr` and `maps/mapN/size` files for memory regions
-/// 3. Verifies if the target address falls within any mapped region
-pub(crate) fn check_uio_device_for_address(target: u64) -> Option<(String, String)> {
-    let sysfs_uio_base = "/sys/class/uio";
+// /// Scans the sysfs UIO device directory for any UIO device that can access the given address.
+// ///
+// /// UIO (Userspace I/O) devices expose hardware memory regions through `/dev/uioN` interfaces.
+// /// This function searches for any UIO device that has mapped the target address, which indicates
+// /// the address is serviceable by a UIO driver.
+// ///
+// /// # Arguments
+// /// * `target` - The physical address to check
+// ///
+// /// # Returns
+// /// * `Some((uio_path, device_name))` if a UIO device mapping this address is found
+// ///   - `uio_path`: Path to the UIO device file (e.g., "/dev/uio0")
+// ///   - `device_name`: Name of the UIO device (from sysfs)
+// /// * `None` if no UIO device maps this address
+// ///
+// /// # Technical Details
+// /// For each UIO device in `/sys/class/uio/`, this function:
+// /// 1. Reads the device name from `name` file
+// /// 2. Checks the `maps/mapN/addr` and `maps/mapN/size` files for memory regions
+// /// 3. Verifies if the target address falls within any mapped region
+// pub(crate) fn check_uio_device_for_address(target: u64) -> Option<(String, String)> {
+//     let sysfs_uio_base = "/sys/class/uio";
 
-    let entries = fs::read_dir(sysfs_uio_base).ok()?;
+//     let entries = fs::read_dir(sysfs_uio_base).ok()?;
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let uio_name = path.file_name()?.to_string_lossy().into_owned();
+//     for entry in entries.flatten() {
+//         let path = entry.path();
+//         let uio_name = path.file_name()?.to_string_lossy().into_owned();
 
-        // Read the device name
-        let name_path = path.join("name");
-        let device_name = match fs::read_to_string(&name_path) {
-            Ok(content) => content.trim().to_string(),
-            Err(_) => continue,
-        };
+//         // Read the device name
+//         let name_path = path.join("name");
+//         let device_name = match fs::read_to_string(&name_path) {
+//             Ok(content) => content.trim().to_string(),
+//             Err(_) => continue,
+//         };
 
-        // Check each memory map in the UIO device
-        let maps_path = path.join("maps");
-        if let Ok(maps_entries) = fs::read_dir(&maps_path) {
-            for map_entry in maps_entries.flatten() {
-                let map_path = map_entry.path();
+//         // Check each memory map in the UIO device
+//         let maps_path = path.join("maps");
+//         if let Ok(maps_entries) = fs::read_dir(&maps_path) {
+//             for map_entry in maps_entries.flatten() {
+//                 let map_path = map_entry.path();
 
-                // Check if this map contains the target address
-                let addr_path = map_path.join("addr");
-                let size_path = map_path.join("size");
+//                 // Check if this map contains the target address
+//                 let addr_path = map_path.join("addr");
+//                 let size_path = map_path.join("size");
 
-                if let (Ok(addr_str), Ok(size_str)) =
-                    (fs::read_to_string(&addr_path), fs::read_to_string(&size_path))
-                {
-                    if let (Ok(addr), Ok(size)) = (
-                        u64::from_str_radix(addr_str.trim(), 16),
-                        u64::from_str_radix(size_str.trim(), 16),
-                    ) {
-                        // Check if target address falls within this region
-                        if target >= addr && target < (addr + size) {
-                            let uio_dev_path = format!("/dev/{}", uio_name);
-                            return Some((uio_dev_path, device_name));
-                        }
-                    }
-                }
-            }
-        }
-    }
+//                 if let (Ok(addr_str), Ok(size_str)) = (
+//                     fs::read_to_string(&addr_path),
+//                     fs::read_to_string(&size_path),
+//                 ) {
+//                     if let (Ok(addr), Ok(size)) = (
+//                         u64::from_str_radix(addr_str.trim(), 16),
+//                         u64::from_str_radix(size_str.trim(), 16),
+//                     ) {
+//                         // Check if target address falls within this region
+//                         if target >= addr && target < (addr + size) {
+//                             let uio_dev_path = format!("/dev/{}", uio_name);
+//                             return Some((uio_dev_path, device_name));
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
 
-    None
-}
+//     None
+// }
 
 pub(crate) fn check_iomem(target: u64) -> bool {
     let Ok(content) = fs::read_to_string("/proc/iomem") else {
@@ -76,14 +77,14 @@ pub(crate) fn check_iomem(target: u64) -> bool {
 
     for line in content.lines() {
         // Line format: "a0000000-a0000fff : some_device"
-        if let Some((range_part, _)) = line.split_once(" : ") {
-            if let Some((start_str, end_str)) = range_part.split_once('-') {
-                let start = u64::from_str_radix(start_str.trim(), 16).unwrap_or(0);
-                let end = u64::from_str_radix(end_str.trim(), 16).unwrap_or(0);
+        if let Some((range_part, _)) = line.split_once(" : ")
+            && let Some((start_str, end_str)) = range_part.split_once('-')
+        {
+            let start = u64::from_str_radix(start_str.trim(), 16).unwrap_or(0);
+            let end = u64::from_str_radix(end_str.trim(), 16).unwrap_or(0);
 
-                if target >= start && target <= end {
-                    return true;
-                }
+            if target >= start && target <= end {
+                return true;
             }
         }
     }
@@ -181,24 +182,24 @@ pub(crate) fn is_address_legit(target: u64) -> bool {
     false
 }
 
-/// Verifies whether a physical address is serviceable by a UIO device.
-///
-/// This function checks if the target address is exposed through any UIO device,
-/// which indicates it can be accessed safely via the UIO interface rather than raw `/dev/mem`.
-///
-/// # Arguments
-/// * `target` - The physical address to check
-///
-/// # Returns
-/// * `Some((uio_path, device_name))` if the address is serviceable by a UIO device
-/// * `None` if no UIO device services this address
-///
-/// # Example
-/// ```ignore
-/// if let Some((path, name)) = is_address_serviceable_by_uio(0xa0000000) {
-///     println!("Address {} is serviceable by UIO device {}", path, name);
-/// }
-/// ```
-pub(crate) fn is_address_serviceable_by_uio(target: u64) -> Option<(String, String)> {
-    check_uio_device_for_address(target)
-}
+// /// Verifies whether a physical address is serviceable by a UIO device.
+// ///
+// /// This function checks if the target address is exposed through any UIO device,
+// /// which indicates it can be accessed safely via the UIO interface rather than raw `/dev/mem`.
+// ///
+// /// # Arguments
+// /// * `target` - The physical address to check
+// ///
+// /// # Returns
+// /// * `Some((uio_path, device_name))` if the address is serviceable by a UIO device
+// /// * `None` if no UIO device services this address
+// ///
+// /// # Example
+// /// ```ignore
+// /// if let Some((path, name)) = is_address_serviceable_by_uio(0xa0000000) {
+// ///     println!("Address {} is serviceable by UIO device {}", path, name);
+// /// }
+// /// ```
+// pub(crate) fn is_address_serviceable_by_uio(target: u64) -> Option<(String, String)> {
+//     check_uio_device_for_address(target)
+// }

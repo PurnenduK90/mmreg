@@ -16,8 +16,9 @@
 //! ```
 
 mod interface;
-mod memregs;
+mod devmem;
 mod register;
+mod memcheck;
 
 /// The main interface for managing mapped registers and safe access.
 ///
@@ -33,23 +34,28 @@ pub use register::{Register, SubRegister};
 ///
 /// # Arguments
 /// * `address` - The physical address to read from.
+/// * `force` - If true, bypass address validation (requires elevated privileges).
 ///
 /// # Returns
 /// * `Ok(u32)` - The value read from the address.
-/// * `Err(String)` - Error message if mapping or reading fails.
+/// * `Err(String)` - Error message if address validation, mapping, or reading fails.
 ///
 /// # Example
 /// ```rust
-/// let value = mmreg::read_register_at(0x4000_0000)?;
+/// let value = mmreg::read_register_at(0x4000_0000, false)?;
 /// println!("Value: 0x{:08X}", value);
+/// 
+/// // Force read even if address validation fails
+/// let value = mmreg::read_register_at(0x4000_0000, true)?;
 /// ```
-pub fn read_register_at(address: u64) -> Result<u32, String> {
+pub fn read_register_at(address: u64, force: bool) -> Result<u32, String> {
     let mut interface = crate::Interface::new(
         "devmem",
         address,
         4,
         vec![crate::Register::new("reg", 0, vec![])],
     );
+    interface.force_map = force;
     interface.read_register("reg")
 }
 
@@ -58,22 +64,27 @@ pub fn read_register_at(address: u64) -> Result<u32, String> {
 /// # Arguments
 /// * `address` - The physical address to write to.
 /// * `value` - The 32-bit value to write.
+/// * `force` - If true, bypass address validation (requires elevated privileges).
 ///
 /// # Returns
 /// * `Ok(())` - On success.
-/// * `Err(String)` - Error message if mapping or writing fails.
+/// * `Err(String)` - Error message if address validation, mapping, or writing fails.
 ///
 /// # Example
 /// ```rust
-/// mmreg::write_register_at(0x4000_0000, 0xDEADBEEF)?;
+/// mmreg::write_register_at(0x4000_0000, 0xDEADBEEF, false)?;
 /// println!("Wrote value.");
+/// 
+/// // Force write even if address validation fails
+/// mmreg::write_register_at(0x4000_0000, 0xDEADBEEF, true)?;
 /// ```
-pub fn write_register_at(address: u64, value: u32) -> Result<(), String> {
+pub fn write_register_at(address: u64, value: u32, force: bool) -> Result<(), String> {
     let mut interface = crate::Interface::new(
         "devmem",
         address,
         4,
         vec![crate::Register::new("reg", 0, vec![])],
     );
+    interface.force_map = force;
     interface.write_register("reg", value)
 }

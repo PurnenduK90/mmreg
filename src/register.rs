@@ -1,4 +1,4 @@
-use crate::memregs::{read_u32_mapped, write_u32_mapped};
+use crate::devmem::{read_u32_mapped, write_u32_mapped};
 
 /// Represents a 32-bit memory-mapped register.
 ///

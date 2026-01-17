@@ -1,4 +1,5 @@
-use crate::memregs::{mmap_register, munmap_register};
+use crate::devmem::{mmap_register, munmap_register};
+use crate::memcheck::is_address_legit;
 use crate::register::Register;
 use std::fs::{File, OpenOptions};
 
@@ -21,6 +22,8 @@ pub struct Interface {
     pub offset: isize,
     /// File handle for lock file (if locked)
     pub lock_file: Option<File>,
+    /// Force mapping even if address validation fails
+    pub force_map: bool,
 }
 
 impl Interface {
@@ -41,6 +44,7 @@ impl Interface {
             file: None,
             offset: 0,
             lock_file: None,
+            force_map: false,
         }
     }
     /// Returns true if the interface is currently mapped and locked.
@@ -55,16 +59,30 @@ impl Interface {
 
     /// Maps the interface's memory region and acquires a lock for safe access.
     ///
+    /// This function performs the following steps:
+    /// 1. Validates the physical address (unless `force_map` is true)
+    /// 2. Acquires an exclusive file lock for thread-safe access
+    /// 3. Maps the memory region using mmap(2)
+    /// 4. Cleans up the lock file on any error
+    ///
     /// # Returns
     /// * `Ok(())` on success
-    /// * `Err(String)` if mapping or locking fails
+    /// * `Err(String)` if address validation, locking, or mapping fails
     ///
     /// # Example
     /// ```rust
     /// iface.map()?;
     /// ```
     pub fn map(&mut self) -> Result<(), String> {
-        // Acquire lock
+        // Step 1: Validate the address unless force_map is enabled
+        if !self.force_map && !is_address_legit(self.base_address) {
+            return Err(format!(
+                "Address 0x{:x} is not recognized by the system. Use force_map to override.",
+                self.base_address
+            ));
+        }
+
+        // Step 2: Acquire lock
         let lock_file = match OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -82,11 +100,15 @@ impl Interface {
         };
         match fs2::FileExt::lock_exclusive(&lock_file) {
             Ok(_) => {}
-            Err(e) => return Err(format!("Failed to acquire exclusive lock: {}", e)),
+            Err(e) => {
+                // Release lock file on error
+                let _ = fs2::FileExt::unlock(&lock_file);
+                return Err(format!("Failed to acquire exclusive lock: {}", e));
+            }
         }
         self.lock_file = Some(lock_file);
 
-        // Map memory
+        // Step 3: Map memory
         match mmap_register(self.base_address, self.size) {
             Ok((file, map_ptr, offset)) => {
                 self.map_ptr = Some(map_ptr);
@@ -94,7 +116,13 @@ impl Interface {
                 self.offset = offset;
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                // Release lock file on mapping error
+                if let Some(lock_file) = self.lock_file.take() {
+                    let _ = fs2::FileExt::unlock(&lock_file);
+                }
+                Err(e)
+            }
         }
     }
 

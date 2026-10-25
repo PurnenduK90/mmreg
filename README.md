@@ -1,104 +1,80 @@
 # mmreg
-[![Documentation](https://docs.rs/mmreg/badge.svg)](https://docs.rs/mmreg) 
-[![Crates.io](https://img.shields.io/crates/v/mmreg.svg)](https://crates.io/crates/mmreg) 
-[![Downloads](https://img.shields.io/crates/d/mmreg.svg)](https://crates.io/crates/mmreg) 
-[![License](https://img.shields.io/crates/l/mmreg.svg)](LICENSE) 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg?maxAge=3600)](https://www.rust-lang.org/)
-[![Maintenance](https://img.shields.io/badge/maintenance-actively--developed-brightgreen.svg)](https://github.com/PurnenduK90/mmreg)
+[![Documentation](https://docs.rs/mmreg/badge.svg)](https://docs.rs/mmreg)
+[![Crates.io](https://img.shields.io/crates/v/mmreg.svg)](https://crates.io/crates/mmreg)
+[![Downloads](https://img.shields.io/crates/d/mmreg.svg)](https://crates.io/crates/mmreg)
+[![License](https://img.shields.io/crates/l/mmreg.svg)](LICENSE.txt)
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-blue.svg?maxAge=3600)](https://www.rust-lang.org/)
 [![Build Status](https://github.com/PurnenduK90/mmreg/workflows/CI/badge.svg)](https://github.com/PurnenduK90/mmreg/actions)
 
-A Rust library and CLI tool for safe, concurrent access to 32-bit memory-mapped IO registers.
+A Rust library and CLI for safe, concurrent access to 32-bit memory-mapped IO registers: a
+`devmem2` replacement that refuses accesses likely to hang the bus instead of performing them.
 
 ## Features
-- Safe mapping/unmapping of physical memory (e.g., via `/dev/mem`)
-- Register abstraction with offset and bitfield helpers
-- Grouped register interfaces (e.g., AXI)
-- Safe concurrent read/write operations (multi-process)
-- Usable as both a library and a command-line tool
+- **UIO first, `/dev/mem` fallback**: uses the `/dev/uioN` region covering an address when there
+  is one; `/dev/mem` is opened `O_SYNC` (uncached), and addresses at or above 2 GiB work on 32-bit
+  ARM (64-bit `mmap` offset).
+- **Blueprint validation**: the range must be known to the kernel (`/sys/class/uio`, Device Tree
+  `of_node/reg`, `/proc/iomem`) and must not be System RAM, kernel memory, reserved or ACPI memory.
+- **Zombie hardware pre-flight**: the owning device must have DT `status = "okay"`, be runtime-PM
+  active with active suppliers, have no clock gated in hardware (`clk_summary`), and, on an FPGA
+  fabric only, have its FPGA manager `operating`. With `/dev/mem`, the device is held runtime-active
+  while mapped.
+- **Safety profiles** (`--validate <profile.toml>`): extra register checks (clock, reset,
+  isolation bits) that must pass before the target is touched.
+- **Alignment and bounds**: every access is 4-byte aligned and inside the declared window.
+- **Concurrency**: a per-page inter-process lock around every access and read-modify-write.
+- **Structured errors**: every failure is a `MmregError` with a stable `[E_*]` code and a
+  remediation hint.
 
-## Usage
-### mmreg CLI Usage
-
-#### Commands
-- `read <address>`: Read a 32-bit value from the given physical address.
-- `write <address> <value>`: Write a 32-bit value to the given physical address.
-
-#### Examples
+## CLI
 ```sh
-mmreg read 0x40000000
-mmreg write 0x40000000 0xDEADBEEF
+mmreg read 0x4000_0000
+mmreg write 0x4000_0000 0xDEADBEEF
+mmreg --dec write 0x4000_0000 100        # or: mmreg write 0x4000_0000 0d100
+mmreg --validate zynqmp_gem3.toml read 0xFF0E_0000
+mmreg --force read 0x4000_0000           # skip blueprint and pre-flight checks
 ```
+Numbers are hexadecimal with or without `0x` (underscores allowed); `0d` or `--dec` selects
+decimal. See [CLI Usage](docs/users/03-cli-usage.md).
 
-#### Options
-- Addresses and values can be specified in hex (with or without `0x`).
-- Output is formatted as `0xXXXXXXXX` for reads.
-
-### Library Usage
-See [Documentation](https://docs.rs/mmreg) for API documentation and examples.
+## Library
 ```rust
-use mmreg::{Interface, Register, SubRegister};
-use mmreg::{read_register_at, write_register_at};
-// Read a 32-bit value from a physical address
-let value = read_register_at(0x4000_0000)?;
-// Write a 32-bit value to a physical address
-write_register_at(0x4000_0000, 0xDEADBEEF)?;
-// ...
+use mmreg::{Interface, MmregError, Register, SubRegister};
+
+fn main() -> Result<(), MmregError> {
+    let value = mmreg::read_register_at(0x4000_0000, false)?;
+    mmreg::write_register_at(0x4000_0000, value | 1, false)?;
+
+    let mut gpio = Interface::new(
+        "axi_gpio",
+        0xA000_0000,
+        0x10,
+        vec![Register::new("ctrl", 0x0, vec![SubRegister::new("mode", 7, 4)])],
+    );
+    gpio.write_subregister("ctrl", "mode", 0x5)?;
+    Ok(())
+}
 ```
+See [Library Usage](docs/users/04-library-usage.md) and the [API documentation](https://docs.rs/mmreg).
 
-## Project Structure
-- `src/register.rs`: Single register and subregister abstraction
-- `src/interface.rs`: Group of registers (interface)
-- `src/memregs.rs`: Unsafe Memory read Write (unix only)
-- `src/lib.rs`: Library API
-- `src/main.rs`: Command-line interface
+## Footprint
+The only runtime dependency is `libc`. TOML safety-profile files need the `profile` feature (on by
+default), which adds `toml` and `serde`. Release binaries (x86_64 Linux, stripped, LTO,
+`panic = "abort"`):
 
-## Cross-Compilation Targets
+| Build | Size |
+| :--- | ---: |
+| `cargo build --release` | ~545 KB |
+| `cargo build --release --no-default-features` (no `--validate`) | ~360 KB |
 
+Prebuilt targets ([`targets.txt`](targets.txt)): `x86_64`, `aarch64`, `armv7` and `riscv64gc`
+Linux, with static musl builds of the embedded ones that run on any rootfs.
 
-The list of supported cross-compilation targets is maintained in a single file: `targets.txt`.
-
-- Requires WSL/Ubuntu with buildtools for compilation.
-    ```
-    sudo apt update ; sudo apt install -y build-essential
-    ```
-- **Do not** edit the Makefile or config files to add/remove targets; always update `targets.txt`.
-- The Makefile and build automation read from `targets.txt` to ensure consistency.
-- Example contents of `targets.txt`:
-
-```
-x86_64-unknown-linux-gnu
-i686-unknown-linux-gnu
-armv7-unknown-linux-gnueabihf
-aarch64-unknown-linux-gnu 
-```
-
-To add or remove a target, simply edit `targets.txt` and rerun your build commands.
+## Documentation
+- [User guide](docs/users/README.md): installation, CLI, library, safety checks, error codes
+- [Developer guide](docs/developers/README.md): architecture, mappers, pre-flight internals,
+  build/test/release
+- [Changelog](changelog.md) and [roadmap](TODO.md)
 
 ## License
 MIT
-
-## issues
-- [ ] Doesn't compile on windows
-- [ ] wsl is unable to publish
- 
-## mmreg Roadmap
-
-### Planned Features (Not in sequence)
-- [ ] Support for 8, 16, 64, and larger register widths
-- [ ] Batch/group register operations
-- [ ] Improved error handling and diagnostics
-- [ ] More flexible bitfield/subregister API
-- [ ] Integration tests and example scripts
-- [ ] Documentation improvements
-- [ ] Support Windows machine build
-- [ ] Setup Tests
-- [ ] Setup release
-- [ ] Add/Verify Targets
-    - [ ] mips-unknown-linux-gnu
-    - [ ] powerpc-unknown-linux-gnu
-    - [ ] riscv64gc-unknown-linux-gnu
-
-
-### Future Directions
-- [ ] Optional async API for high-performance use
-- [ ] Optional Auto timeout

@@ -1,90 +1,107 @@
-//! # mmio Library API
+//! # mmreg Library API
 //!
-//! This crate provides safe, concurrent access to 32-bit memory-mapped IO registers via /dev/mem.
-//! It is designed for use in CLI tools, controllers, and logging utilities that need direct register access.
+//! Safe, concurrent access to 32-bit memory-mapped IO registers via UIO (`/dev/uioN`) or
+//! `/dev/mem`, backed by blueprint address validation and Hardware Pre-Flight checks.
+//!
+//! ## Features
+//! - `profile` (default): load `SafetyProfile`s from TOML files. Without it the crate depends on
+//!   `libc` only; profiles can still be built in code.
 //!
 //! ## Example Usage
 //!
-//! ```rust
-//! use mmreg::{read_register_at, write_register_at};
+//! ```no_run
+//! use mmreg::{MmregError, read_register_at, write_register_at};
 //!
-//! // Read a 32-bit value from a physical address
-//! let value = read_register_at(0x4000_0000)?;
+//! // Read a 32-bit value from a physical address (with pre-flight validation)
+//! let value = read_register_at(0x4000_0000, false)?;
 //!
 //! // Write a 32-bit value to a physical address
-//! write_register_at(0x4000_0000, 0xDEADBEEF)?;
+//! write_register_at(0x4000_0000, 0xDEADBEEF, false)?;
+//! # Ok::<(), MmregError>(())
 //! ```
 
-mod devmem;
+mod error;
 mod interface;
+mod lock;
 mod memcheck;
+mod memregs;
+mod mmio;
+pub mod parse;
 mod register;
+mod validation;
 
-/// The main interface for managing mapped registers and safe access.
-///
-/// Create an `Interface` to manage a group of registers, handle mapping/unmapping, and provide safe concurrent access.
+pub use error::MmregError;
 pub use interface::Interface;
-
-/// Represents a 32-bit register with optional subregisters (bitfields).
-///
-/// Use `Register::new` to construct, and access via `Interface` methods.
+pub use memregs::{MapperType, MemoryMapper};
 pub use register::{Register, SubRegister};
+pub use validation::{SafetyProfile, ValidationCheck};
 
-/// Reads a 32-bit value from a physical address using /dev/mem.
-///
-/// # Arguments
-/// * `address` - The physical address to read from.
-/// * `force` - If true, bypass address validation (requires elevated privileges).
-///
-/// # Returns
-/// * `Ok(u32)` - The value read from the address.
-/// * `Err(String)` - Error message if address validation, mapping, or reading fails.
-///
-/// # Example
-/// ```rust
-/// let value = mmreg::read_register_at(0x4000_0000, false)?;
-/// println!("Value: 0x{:08X}", value);
-///
-/// // Force read even if address validation fails
-/// let value = mmreg::read_register_at(0x4000_0000, true)?;
-/// ```
-pub fn read_register_at(address: u64, force: bool) -> Result<u32, String> {
-    let mut interface = crate::Interface::new(
-        "devmem",
-        address,
-        4,
-        vec![crate::Register::new("reg", 0, vec![])],
-    );
-    interface.force_map = force;
-    interface.read_register("reg")
+fn single_register(address: u64, force: bool) -> Interface {
+    Interface::new("mmreg", address, 4, vec![Register::new("reg", 0, vec![])]).with_force(force)
 }
 
-/// Writes a 32-bit value to a physical address using /dev/mem.
+/// Reads 32 bits at a 4-byte-aligned physical address, through UIO when a region covers it,
+/// `/dev/mem` otherwise.
 ///
-/// # Arguments
-/// * `address` - The physical address to write to.
-/// * `value` - The 32-bit value to write.
-/// * `force` - If true, bypass address validation (requires elevated privileges).
-///
-/// # Returns
-/// * `Ok(())` - On success.
-/// * `Err(String)` - Error message if address validation, mapping, or writing fails.
+/// `force` bypasses blueprint and pre-flight validation (alignment is still checked).
 ///
 /// # Example
-/// ```rust
-/// mmreg::write_register_at(0x4000_0000, 0xDEADBEEF, false)?;
-/// println!("Wrote value.");
-///
-/// // Force write even if address validation fails
-/// mmreg::write_register_at(0x4000_0000, 0xDEADBEEF, true)?;
+/// ```no_run
+/// let value = mmreg::read_register_at(0x4000_0000, false)?;
+/// println!("Value: 0x{:08X}", value);
+/// # Ok::<(), mmreg::MmregError>(())
 /// ```
-pub fn write_register_at(address: u64, value: u32, force: bool) -> Result<(), String> {
-    let mut interface = crate::Interface::new(
-        "devmem",
-        address,
-        4,
-        vec![crate::Register::new("reg", 0, vec![])],
-    );
-    interface.force_map = force;
-    interface.write_register("reg", value)
+pub fn read_register_at(address: u64, force: bool) -> Result<u32, MmregError> {
+    single_register(address, force).read_register("reg")
+}
+
+/// Writes 32 bits at a 4-byte-aligned physical address, through UIO when a region covers it,
+/// `/dev/mem` otherwise.
+///
+/// `force` bypasses blueprint and pre-flight validation (alignment is still checked).
+///
+/// # Example
+/// ```no_run
+/// mmreg::write_register_at(0x4000_0000, 0xDEADBEEF, false)?;
+/// # Ok::<(), mmreg::MmregError>(())
+/// ```
+pub fn write_register_at(address: u64, value: u32, force: bool) -> Result<(), MmregError> {
+    single_register(address, force).write_register("reg", value)
+}
+
+/// Creates an empty, uniquely named directory under the system temp dir.
+#[cfg(test)]
+pub(crate) fn test_dir(prefix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "mmreg_{}_{}_{}",
+        prefix,
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_and_write_register_at_validation_and_alignment_error() {
+        assert!(read_register_at(0xDEAD_BEEF_0000, false).is_err());
+        assert!(write_register_at(0xDEAD_BEEF_0000, 0x1234_5678, false).is_err());
+        assert_eq!(
+            read_register_at(0x4000_0002, true).unwrap_err().code(),
+            "E_UNALIGNED_ACCESS"
+        );
+        assert_eq!(
+            write_register_at(0x4000_0001, 0x1, true)
+                .unwrap_err()
+                .code(),
+            "E_UNALIGNED_ACCESS"
+        );
+    }
 }

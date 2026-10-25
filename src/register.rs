@@ -1,56 +1,43 @@
-use crate::devmem::{read_u32_mapped, write_u32_mapped};
+use crate::memregs::MemoryMapper;
 
-/// Represents a 32-bit memory-mapped register.
-///
-/// Use this struct to define registers for use with an Interface. Registers can have subregisters (bitfields).
+/// A 32-bit memory-mapped register with optional subregisters (bitfields).
 ///
 /// # Example
 /// ```rust
-/// use mmreg::Register;
-/// let reg = Register::new("status", 0x0, vec![]);
+/// use mmreg::{Register, SubRegister};
+/// let reg = Register::new("status", 0x4, vec![SubRegister::new("ready", 0, 0)]);
 /// ```
 pub struct Register {
     /// Name of the register
     pub name: String,
-    /// Offset from the base address (in bytes)
+    /// Byte offset from the `Interface` base address (a multiple of 4)
     pub offset: u32,
-    /// Last read or written value of the register
+    /// Last value read from or written to the register
     pub raw: u32,
-    /// List of subregisters (bitfields) in this register
+    /// Subregisters (bitfields) of this register
     pub children: Vec<SubRegister>,
 }
 
-/// Represents a subregister (bitfield) within a 32-bit register.
-///
-/// Use this struct to define bitfields for a Register. Specify the bit range using msb and lsb.
+/// A bitfield `[msb:lsb]` within a 32-bit register.
 ///
 /// # Example
 /// ```rust
 /// use mmreg::SubRegister;
-/// let sub = SubRegister::new("flag", 7, 0);
+/// let mode = SubRegister::new("mode", 7, 4);
+/// assert_eq!(mode.mask(), 0xF0);
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubRegister {
-    /// Name of the subregister (bitfield)
+    /// Name of the subregister
     pub name: String,
-    /// Most significant bit of the subregister
+    /// Most significant bit
     pub msb: u8,
-    /// Least significant bit of the subregister
+    /// Least significant bit
     pub lsb: u8,
 }
 
 impl Register {
-    /// Creates a new 32-bit register.
-    ///
-    /// # Arguments
-    /// * `name` - Register name
-    /// * `offset` - Offset from base address
-    /// * `children` - List of subregisters
-    ///
-    /// # Example
-    /// ```rust
-    /// let reg = Register::new("status", 0x0, vec![]);
-    /// ```
+    /// Creates a register at byte `offset` from its `Interface` base address.
     pub fn new(name: &str, offset: u32, children: Vec<SubRegister>) -> Self {
         Register {
             name: name.to_string(),
@@ -59,91 +46,29 @@ impl Register {
             children,
         }
     }
-    // All other methods are private to the crate
-    /// Read the value of the register, using mapped memory if available
-    pub(crate) fn read(&mut self, map_ptr: *mut u8, iface_offset: isize) -> Result<u32, String> {
-        let val = read_u32_mapped(map_ptr, iface_offset, self.offset);
-        self.raw = val;
-        Ok(val)
+
+    /// Reads the register from hardware into `raw`.
+    #[inline]
+    pub(crate) fn read(&mut self, mapper: &dyn MemoryMapper) -> u32 {
+        self.raw = mapper.read_u32(self.offset);
+        self.raw
     }
 
-    /// Write a value to the register, using mapped memory if available
-    pub(crate) fn write(
-        &mut self,
-        map_ptr: *mut u8,
-        iface_offset: isize,
-        value: u32,
-    ) -> Result<(), String> {
-        write_u32_mapped(map_ptr, iface_offset, self.offset, value);
+    /// Writes `value` to hardware and records it in `raw`.
+    #[inline]
+    pub(crate) fn write(&mut self, mapper: &dyn MemoryMapper, value: u32) {
+        mapper.write_u32(self.offset, value);
         self.raw = value;
-        Ok(())
     }
 
-    /// get a subregister by name
-    pub(crate) fn get_subregister(&self, name: &str) -> Option<&SubRegister> {
+    /// Returns the subregister called `name`.
+    pub(crate) fn subregister(&self, name: &str) -> Option<&SubRegister> {
         self.children.iter().find(|sub| sub.name == name)
-    }
-
-    /// Read a subregister value using its mask
-    /// If refresh is true, update self.raw from mapped memory before reading
-    pub(crate) fn read_subregister(
-        &mut self,
-        sub: &SubRegister,
-        refresh: bool,
-        map_ptr: Option<*mut u8>,
-        iface_offset: isize,
-    ) -> Result<u32, String> {
-        if refresh {
-            if let Some(ptr) = map_ptr {
-                self.read(ptr, iface_offset)?;
-            } else {
-                return Err("Mapped pointer not available".to_string());
-            }
-        }
-        let mask = sub.mask();
-        Ok((self.raw & mask) >> sub.lsb)
-    }
-
-    /// Write a value to a subregister and write back to memory
-    /// If refresh is true, update self.raw from mapped memory before writing
-    pub(crate) fn write_subregister(
-        &mut self,
-        sub: &SubRegister,
-        value: u32,
-        refresh: bool,
-        map_ptr: Option<*mut u8>,
-        iface_offset: isize,
-    ) -> Result<(), String> {
-        if refresh {
-            if let Some(ptr) = map_ptr {
-                self.read(ptr, iface_offset)?;
-            } else {
-                return Err("Mapped pointer not available".to_string());
-            }
-        }
-        let mask = sub.mask();
-        self.raw = (self.raw & !mask) | ((value << sub.lsb) & mask);
-        if let Some(ptr) = map_ptr {
-            self.write(ptr, iface_offset, self.raw)?;
-        } else {
-            return Err("Mapped pointer not available".to_string());
-        }
-        Ok(())
     }
 }
 
 impl SubRegister {
-    /// Creates a new subregister (bitfield).
-    ///
-    /// # Arguments
-    /// * `name` - Subregister name
-    /// * `msb` - Most significant bit
-    /// * `lsb` - Least significant bit
-    ///
-    /// # Example
-    /// ```rust
-    /// let sub = SubRegister::new("flag", 7, 0);
-    /// ```
+    /// Creates a bitfield covering bits `msb` down to `lsb`.
     pub fn new(name: &str, msb: u8, lsb: u8) -> Self {
         SubRegister {
             name: name.to_string(),
@@ -151,12 +76,32 @@ impl SubRegister {
             lsb,
         }
     }
-    // All other methods are private to the crate
+
+    /// Returns the bitmask of `[msb:lsb]`, or 0 when the range is invalid (`msb < lsb` or `msb > 31`).
+    #[inline]
     pub fn mask(&self) -> u32 {
         if self.msb < self.lsb || self.msb > 31 {
-            0
-        } else {
-            ((1u32 << (self.msb - self.lsb + 1)) - 1) << self.lsb
+            return 0;
         }
+        (u32::MAX >> (31 - self.msb)) & (u32::MAX << self.lsb)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_subregister_mask() {
+        assert_eq!(SubRegister::new("low", 7, 0).mask(), 0x0000_00FF);
+        assert_eq!(SubRegister::new("mid", 15, 12).mask(), 0x0000_F000);
+        assert_eq!(SubRegister::new("bit", 31, 31).mask(), 0x8000_0000);
+        assert_eq!(SubRegister::new("all", 31, 0).mask(), 0xFFFF_FFFF);
+        assert_eq!(SubRegister::new("reversed", 3, 5).mask(), 0);
+        assert_eq!(SubRegister::new("too_high", 32, 0).mask(), 0);
+
+        let reg = Register::new("ctrl", 0, vec![SubRegister::new("en", 0, 0)]);
+        assert!(reg.subregister("en").is_some());
+        assert!(reg.subregister("missing").is_none());
     }
 }

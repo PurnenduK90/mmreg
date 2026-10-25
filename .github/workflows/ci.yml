@@ -18,26 +18,38 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Run lint
-        run: make lint
+      - uses: taiki-e/install-action@just
+      - run: just lint
 
-  check:
-    name: Check
+  test:
+    name: Test, Coverage & Docs
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Run check
-        run: make check
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov
+      - run: just test coverage doc
+
+  msrv:
+    name: MSRV (1.89)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: cargo check --all-targets && cargo check --all-targets --no-default-features
 
   build:
-    name: Build
+    name: Cross Build
     runs-on: ubuntu-24.04
-    needs: [lint, check]
+    needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-      - name: Build all targets
-        run: make all
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cross
+      - run: just build-targets

@@ -1,8 +1,8 @@
-# Cargo.toml
 [package]
 name = "mmreg"
-version = "0.1.1"
+version = "1.0.0"
 edition = "2024"
+rust-version = "1.89"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
 description = "Safe, concurrent 32-bit memory-mapped IO register access for Rust. Library and CLI for embedded and PC (linux) platforms."
 license = "MIT"
@@ -11,6 +11,19 @@ readme = "README.md"
 keywords = ["embedded", "mmio", "registers", "hardware", "memory-mapped"]
 categories = ["embedded", "hardware-support"]
 
+[features]
+default = ["profile"]
+# TOML safety-profile files (`SafetyProfile::parse`, `--validate`); about 170 KB of the binary.
+profile = ["dep:serde", "dep:toml"]
+
 [dependencies]
-libc = "0.2" # For low-level system calls
-fs2 = "0.4"  # For file locking (Inter-process concurrency safety)
+libc = "0.2"
+serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
+toml = { version = "0.8", default-features = false, features = ["parse"], optional = true }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

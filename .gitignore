@@ -1,6 +1,5 @@
-# Rust build artifacts
+# Rust build artifacts (Cargo.lock is committed: reproducible binary and Yocto builds)
 /target/
-Cargo.lock
 
 # Generated documentation
 /doc/

@@ -29,4 +29,4 @@
         * Release builds for `x86_64`, `aarch64`, `armv7` and `riscv64gc` Linux (glibc), plus static musl builds for `aarch64`, `armv7` and `riscv64gc`; `i686` dropped
     * Tooling
         * `justfile` is the single task runner (CI uses it), checks both feature sets and an MSRV job; `Cargo.lock` committed
-        * `docs/users` + `docs/developers` documentation, `.agents/` skill and rules
+        * `docs/users` + `docs/developers` documentation

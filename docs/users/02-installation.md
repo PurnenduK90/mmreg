@@ -22,13 +22,13 @@ cargo install --path .
 
 | Feature | Default | Adds |
 | :--- | :--- | :--- |
-| `profile` | on | TOML safety-profile files (`--validate`); the `toml` + `serde` dependencies |
+| `profile` | on | JSON safety-profile files (`--validate`) |
 | `debug` | off | `/dev/mem` access for addresses no UIO region covers (`devmem` replacement) |
 
 ```sh
 cargo install mmreg --features debug         # bring-up / debug images: any address
 cargo install mmreg                          # release images: UIO devices only
-cargo install mmreg --no-default-features    # smallest: UIO only, libc only, no --validate
+cargo install mmreg --no-default-features    # smallest: UIO only, no --validate
 ```
 
 The prebuilt binaries (`just build-targets`) are built with `debug`.
@@ -46,8 +46,8 @@ mmreg = "1.0"
 
 Or using `cargo add`:
 ```sh
-cargo add mmreg                          # with TOML profile files
-cargo add mmreg --no-default-features    # libc only
+cargo add mmreg                          # with JSON profile files
+cargo add mmreg --no-default-features    # without profile file parsing
 ```
 
 `mmreg` needs Rust 1.75 or newer (the Rust of Yocto 5.0 "scarthgap").
@@ -76,9 +76,9 @@ without a matching toolchain, copy the musl binary (e.g.
 
 You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) root filesystem using either a **source-built Cargo recipe** (Rust $\ge 1.75$: Yocto 5.0 "scarthgap" or newer) or a **pre-built binary recipe** (compatible with any Yocto release).
 
-### Option A: Building from Source with `inherit cargo` (`mmreg_1.0.0.bb`)
+### Option A: Building from Source with `inherit cargo` (`mmreg_1.0.1.bb`)
 
-Create `meta-custom/recipes-devtools/mmreg/mmreg_1.0.0.bb`:
+Create `meta-custom/recipes-devtools/mmreg/mmreg_1.0.1.bb`:
 
 ```bitbake
 SUMMARY = "Safe, concurrent 32-bit memory-mapped IO register access CLI and library"
@@ -95,7 +95,7 @@ require ${BPN}-crates.inc
 
 # Development images: /dev/mem access for any address (devmem replacement)
 # CARGO_BUILD_FLAGS:append = " --features debug"
-# Release images, smallest binary: UIO only, no TOML profile files (--validate)
+# Release images, smallest binary: UIO only, no JSON profile files (--validate)
 # CARGO_BUILD_FLAGS:append = " --no-default-features"
 ```
 
@@ -181,8 +181,9 @@ builds to development images.
 ### 3. Locking and the Lock Directory
 Every access to a UIO device holds an exclusive `flock` on `/dev/uioN` itself, so C programs that
 lock their own `/dev/uioN` descriptor the same way exclude and are excluded by `mmreg`. Accesses
-through `/dev/mem` lock their physical page through a file in `/run/lock/mmreg` (or
-`/tmp/mmreg-lock` when `/run/lock` is not writable). The first user creates the directory world-writable and sticky
-(`1777`). All users of a device must resolve to the same directory, so make sure `/run/lock` is
-writable for everyone (it is `1777` on systemd and most Yocto images) or pre-create
-`/run/lock/mmreg` with mode `1777`.
+through `/dev/mem` (and custom mappers) lock their physical page through a file in
+`/run/lock/mmreg` (or `/tmp/mmreg-lock` only on systems where `/run/lock` does not exist). To prevent
+root and non-root processes from silently locking different directories, `mmreg` never falls back to
+`/tmp/mmreg-lock` when `/run/lock` exists. If your image has a root-only `/run/lock` (`0755`, common
+on BusyBox / minimal Yocto images), pre-create `/run/lock/mmreg` at boot with mode `1777`
+(`mkdir -m 1777 -p /run/lock/mmreg` or a `tmpfiles.d` entry `d /run/lock/mmreg 1777 root root -`).

@@ -129,21 +129,23 @@ use mmreg::{Interface, MmregError, Register, SafetyProfile};
 fn main() -> Result<(), MmregError> {
     // Needs the `profile` feature (default). SafetyProfile::from_file(path) reads a file.
     let profile = SafetyProfile::parse(
-        r#"
-        name = "ZynqMP_GEM3"
-
-        [[checks]]
-        name = "GEM3 reference clock active (CRL_APB.GEM3_REF_CTRL)"
-        addr = 0xFF5E_005C
-        mask = 0x0200_0000
-        expected = 0x0200_0000
-
-        [[checks]]
-        name = "GEM3 reset deasserted (CRL_APB.RST_LPD_IOU0)"
-        addr = 0xFF5E_0238
-        mask = 0x8
-        expected = 0x0
-        "#,
+        r#"{
+            "name": "ZynqMP_GEM3",
+            "checks": [
+                {
+                    "name": "GEM3 reference clock active (CRL_APB.GEM3_REF_CTRL)",
+                    "addr": "0xFF5E_005C",
+                    "mask": "0x0200_0000",
+                    "expected": "0x0200_0000"
+                },
+                {
+                    "name": "GEM3 reset deasserted (CRL_APB.RST_LPD_IOU0)",
+                    "addr": "0xFF5E_0238",
+                    "mask": "0x8",
+                    "expected": "0x0"
+                }
+            ]
+        }"#,
     )?;
 
     let mut gem3 = Interface::new(

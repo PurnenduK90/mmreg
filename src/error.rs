@@ -59,7 +59,7 @@ pub enum MmregError {
         expected: u32,
         actual: u32,
     },
-    /// Failed to read or parse a declarative validation profile TOML/JSON file.
+    /// Failed to read or parse a declarative validation profile JSON file.
     ValidationProfileParse { details: String },
     /// Failed to open `/dev/mem`.
     DevMemOpen { address: u64, details: String },
@@ -280,7 +280,7 @@ impl fmt::Display for MmregError {
             MmregError::ValidationProfileParse { details } => write!(
                 f,
                 "[{}] Invalid Safety Profile: {}. \
-                 Remediation: Provide a valid TOML/JSON profile with `name = \"...\"` and `[[checks]]` tables (`name`, `addr`, `mask`, `expected`).",
+                 Remediation: Provide a valid JSON profile with `\"name\": \"...\"` and `\"checks\": [...]` objects (`name`, `addr`, `mask`, `expected`).",
                 code, details
             ),
             MmregError::DevMemOpen { address, details } => write!(
@@ -354,11 +354,17 @@ impl fmt::Display for MmregError {
             ),
             MmregError::LockOpen { lock_path, details } => write!(
                 f,
-                "[{}] Failed to open inter-process lock file '{}': {}. \
-                 Remediation: Check write permissions on the lock directory.",
+                "[{}] Failed to open inter-process lock file '{}': {}. Remediation: {}",
                 code,
                 lock_path.display(),
-                details
+                details,
+                // UIO locks the device file itself; /dev/mem and custom mappers use page lock files.
+                if lock_path.starts_with("/dev") {
+                    "Give the user read access to the UIO device (udev rule or group membership)."
+                } else {
+                    "Check permissions on the lock file or pre-create the lock directory \
+                     (`sudo mkdir -m 1777 -p /run/lock/mmreg`)."
+                }
             ),
             MmregError::LockAcquire { details } => write!(
                 f,
@@ -606,5 +612,18 @@ mod tests {
             assert_eq!(err.code(), expected_code);
             assert!(err.to_string().starts_with(&format!("[{}]", expected_code)));
         }
+    }
+
+    #[test]
+    fn test_lock_open_remediation_matches_lock_kind() {
+        let msg = |path: &str| {
+            MmregError::LockOpen {
+                lock_path: PathBuf::from(path),
+                details: "Permission denied".into(),
+            }
+            .to_string()
+        };
+        assert!(msg("/dev/uio0").contains("read access to the UIO device"));
+        assert!(msg("/run/lock/mmreg/0-1000.lock").contains("mkdir -m 1777"));
     }
 }

@@ -15,12 +15,12 @@ src/
 ├── mmio.rs        # Page size, device open, flock, mmap/munmap (Mapping), volatile 8–64-bit access
 ├── memcheck.rs    # Blueprint lookup (UIO, Device Tree, /proc/iomem), pre-flight, runtime PM guard
 ├── lock.rs        # Lock protocol: flock on /dev/uioN, or per-page lock files for /dev/mem
-├── validation.rs  # SafetyProfile / ValidationCheck; TOML parsing behind the `profile` feature
+├── validation.rs  # SafetyProfile / ValidationCheck; JSON parsing behind the `profile` feature
 └── parse.rs       # Integer parsing for CLI, profiles and sysfs
 ```
 
-Dependencies: `libc` (mmap, sysconf); `toml` and `serde` only with the `profile` feature. Locking
-uses `flock(2)` through `mmio.rs`, the only module with `unsafe`.
+Dependencies: `libc` (mmap, sysconf, flock) is the only dependency. Locking uses `flock(2)`
+through `mmio.rs`, the only module with `unsafe`.
 
 ---
 
@@ -71,7 +71,8 @@ sequenceDiagram
    releases the lock. Lock files are opened read-only, which `flock` allows whoever created them;
    the plain open is tried before `O_CREAT` because `fs.protected_regular` stops even root from
    `O_CREAT`-opening another user's file in a sticky directory.
-3. **Lock directory**: `/run/lock/mmreg`, else `/tmp/mmreg-lock`, created `1777`.
+3. **Lock directory**: `/run/lock/mmreg` when `/run/lock` exists, else `/tmp/mmreg-lock`, created
+   `1777` so root and non-root always use the same directory.
 4. **RAII**: `Mapping` unmaps on drop and `RuntimePmGuard` restores `power/control` on drop;
    `Interface::drop` calls `unmap()`, which releases the mapping before the PM guard.
 5. **Batch vs. single-shot**: accesses on an unmapped `Interface` map and unmap around themselves.

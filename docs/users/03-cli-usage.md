@@ -11,7 +11,7 @@ pre-flight checks described in [Safety & Hardware Pre-Flight](05-safety-and-pref
 Usage: mmreg [options] <read|write> <address> [value]
 Options:
   -f, --force               Skip address blueprint and hardware pre-flight validation
-  -v, --validate <file>     Run a TOML Safety Profile's checks before the access
+  -v, --validate <file>     Run a JSON Safety Profile's checks before the access (may be repeated)
   -d, --dec                 Interpret unprefixed numbers as decimal instead of hexadecimal
   -h, --help                Print this help message
 Commands:
@@ -58,36 +58,40 @@ built with the `debug` feature (development images, prebuilt binaries); other bu
 `[E_DEBUG_DISABLED]` before opening anything. The same applies to the register reads of a safety
 profile.
 
-### Safety Profile (`--validate <profile.toml>`)
+### Safety Profile (`--validate <profile.json>`)
 A profile lists registers that must hold expected values before the target is touched, such as
 clock, reset or isolation bits on always-on system-controller registers:
 
-```toml
-# zynqmp_safety.toml
-name = "ZynqMP_AXI_Safety"
-
-[[checks]]
-name = "PCAP_DONE"
-addr = 0xFFCA_3010
-mask = 0x4
-expected = 0x4
-
-[[checks]]
-name = "ISOLATION_REMOVED"
-addr = 0xFF41_0000
-mask = 0xF
-expected = 0x0
+```json
+{
+  "name": "ZynqMP_AXI_Safety",
+  "checks": [
+    {
+      "name": "PCAP_DONE",
+      "addr": "0xFFCA_3010",
+      "mask": "0x4",
+      "expected": "0x4"
+    },
+    {
+      "name": "ISOLATION_REMOVED",
+      "addr": "0xFF41_0000",
+      "mask": "0xF",
+      "expected": "0x0"
+    }
+  ]
+}
 ```
 
 ```sh
-$ sudo mmreg --validate zynqmp_safety.toml read 0xA000_0000
+$ sudo mmreg --validate zynqmp_safety.json read 0xA000_0000
 0x00000000
 ```
 
 All operands are checked before the profile runs. The profile's own register reads skip the
 blueprint and pre-flight checks (they target always-on registers by design), and the profile runs
-even with `--force`. `--validate` needs the `profile` feature (on by default); a minimal build
-reports `[E_CLI_NO_PROFILE]`.
+even with `--force`. If a check's address is outside UIO regions, reading it uses `/dev/mem` and
+therefore needs a `debug` build. `--validate` needs the `profile` feature (on by default); a minimal
+build reports `[E_CLI_NO_PROFILE]`.
 
 ### Skipping Validation (`--force`)
 During board bring-up, when a peripheral is intentionally missing from the Device Tree and

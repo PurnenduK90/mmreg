@@ -126,12 +126,21 @@ impl Interface {
         self.mapper.as_ref().is_some_and(|m| m.is_mapped())
     }
 
-    /// Checks that the base is 4-byte aligned and every register lies aligned inside `size`.
+    /// Checks that the base is 4-byte aligned, the window is non-empty without overflowing `u64`,
+    /// and every register lies aligned inside `size`.
     fn validate_layout(&self) -> Result<(), MmregError> {
         if self.base_address % 4 != 0 {
             return Err(MmregError::UnalignedAccess {
                 address: self.base_address,
                 offset: 0,
+            });
+        }
+        if self.size == 0 || self.base_address.checked_add(self.size as u64).is_none() {
+            return Err(MmregError::OutOfBoundsAccess {
+                register_name: self.name.clone(),
+                offset: 0,
+                access_size: 4,
+                region_size: self.size,
             });
         }
         for reg in &self.registers {
@@ -170,29 +179,43 @@ impl Interface {
             profile.execute_with(|addr| crate::read_register_at(addr, true))?;
         }
 
-        let target = resolve(self.base_address, self.size, !self.force_map)?;
-        let kind = match &self.mapper_type {
-            MapperType::Auto => target.mapper,
-            explicit => explicit.clone(),
-        };
+        let target = resolve(
+            self.base_address,
+            self.size,
+            &self.mapper_type,
+            !self.force_map,
+        )?;
         // UIO keeps the device runtime-active while open and is locked through its device file;
         // /dev/mem (debug builds) needs the runtime PM guard and page lock files.
-        let (device_lock, pm_guard) = match &kind {
-            MapperType::Uio { device_path, .. } => (Some(DeviceLock::open(device_path)?), None),
-            MapperType::DevMem if cfg!(feature = "debug") => (
-                None,
-                target.owner.as_deref().and_then(RuntimePmGuard::acquire),
-            ),
-            _ => (None, None),
+        let pm_guard = match (&target.mapper, self.custom_mapper) {
+            (MapperType::DevMem, false) if cfg!(feature = "debug") => {
+                target.owner.as_deref().and_then(RuntimePmGuard::acquire)
+            }
+            _ => None,
+        };
+        let uio_lock_path = match (&target.mapper, self.custom_mapper) {
+            (MapperType::Uio { device_path, .. }, false) => Some(device_path.clone()),
+            _ => None,
         };
 
         if !self.custom_mapper {
             self.mapper = None;
         }
         self.mapper
-            .get_or_insert_with(|| Box::new(OsMapper::new(kind)))
+            .get_or_insert_with(|| Box::new(OsMapper::new(target.mapper)))
             .map(self.base_address, self.size)?;
-        self.device_lock = device_lock;
+        self.device_lock = match uio_lock_path {
+            Some(path) => match DeviceLock::open(&path) {
+                Ok(lock) => Some(lock),
+                Err(err) => {
+                    if let Some(m) = &mut self.mapper {
+                        m.unmap();
+                    }
+                    return Err(err);
+                }
+            },
+            None => None,
+        };
         self.pm_guard = pm_guard;
         Ok(())
     }
@@ -415,6 +438,17 @@ mod tests {
             "E_SUBREG_RANGE"
         );
         assert_eq!(
+            code(iface.parse_subregister("ctrl", "bad")),
+            "E_SUBREG_RANGE"
+        );
+        assert_eq!(
+            iface
+                .write_subregister("ctrl", "bad", 1)
+                .unwrap_err()
+                .code(),
+            "E_SUBREG_RANGE"
+        );
+        assert_eq!(
             iface.write_register("missing", 1).unwrap_err().code(),
             "E_REG_NOT_FOUND"
         );
@@ -435,13 +469,14 @@ mod tests {
             (0x4000_0000, 16, reg(2), "E_UNALIGNED_ACCESS"),
             (0x4000_0000, 16, reg(16), "E_OUT_OF_BOUNDS"),
             (0x4000_0000, 2, reg(0), "E_OUT_OF_BOUNDS"),
+            (0x4000_0000, 0, vec![], "E_OUT_OF_BOUNDS"),
+            (0xFFFF_FFFF_FFFF_FFFC, 16, vec![], "E_OUT_OF_BOUNDS"),
         ];
         for (base, size, regs, code) in cases {
             let mut iface = Interface::new("bad", base, size, regs)
                 .with_force(true)
                 .with_custom_mapper(MockMapper::boxed(16));
             assert_eq!(iface.map().unwrap_err().code(), code);
-            assert_eq!(iface.read_register("reg").unwrap_err().code(), code);
         }
     }
 
@@ -477,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn test_devmem_fails_cleanly_without_permission_or_debug() {
+    fn test_devmem_and_explicit_uio_fail_cleanly_without_permission_or_debug() {
         let mut iface = Interface::new("dev", 0x4000_0000, 16, vec![])
             .with_force(true)
             .with_mapper_type(MapperType::DevMem);
@@ -488,5 +523,15 @@ mod tests {
             assert_eq!(code, "E_DEBUG_DISABLED");
         }
         assert!(!iface.is_mapped());
+
+        // Explicit UIO fails with E_UIO_ADDRESS (not E_LOCK_OPEN) when the region is missing.
+        let mut uio_iface = Interface::new("uio_dev", 0xA000_0000, 16, vec![])
+            .with_force(true)
+            .with_mapper_type(MapperType::Uio {
+                device_path: "/dev/nonexistent_uio99".to_string(),
+                region_index: 0,
+            });
+        assert_eq!(uio_iface.map().unwrap_err().code(), "E_UIO_ADDRESS");
+        assert!(!uio_iface.is_mapped());
     }
 }

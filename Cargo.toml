@@ -1,6 +1,6 @@
 [package]
 name = "mmreg"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
@@ -13,15 +13,13 @@ categories = ["embedded", "hardware-support"]
 
 [features]
 default = ["profile"]
-# TOML safety-profile files (`SafetyProfile::parse`, `--validate`); about 170 KB of the binary.
-profile = ["dep:serde", "dep:toml"]
+# JSON safety-profile files (`SafetyProfile::parse`, `--validate`).
+profile = []
 # Raw /dev/mem access for addresses no UIO region covers: debug and bring-up builds only.
 debug = []
 
 [dependencies]
 libc = "0.2"
-serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
-toml = { version = "0.8", default-features = false, features = ["parse"], optional = true }
 
 [profile.release]
 opt-level = "s"

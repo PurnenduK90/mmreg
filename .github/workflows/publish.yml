@@ -3,7 +3,7 @@ name: Publish to crates.io
 on:
   push:
     tags:
-      - 'v*.*.*'  # Triggers on version tags like v0.1.2
+      - 'v*.*.*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,5 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@just
+      - run: just lint test
       - name: Publish
         run: cargo publish --token ${{ secrets.CARGO_TOKEN }}

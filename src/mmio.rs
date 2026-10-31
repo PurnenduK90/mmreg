@@ -99,6 +99,9 @@ impl Mapping {
     ) -> io::Result<Self> {
         use std::os::unix::io::AsRawFd;
         let invalid = || io::Error::from(io::ErrorKind::InvalidInput);
+        if size == 0 {
+            return Err(invalid());
+        }
         let len = data_offset.checked_add(size).ok_or_else(invalid)?;
         let offset = off_t::try_from(file_offset).map_err(|_| invalid())?;
         let ptr = unsafe {
@@ -158,8 +161,12 @@ impl Mapping {
     /// Callers guarantee `offset` is aligned to `width` and the access lies inside the window.
     #[inline]
     fn register(&self, offset: u32, width: Width) -> *mut u8 {
-        let at = self.data_offset + offset as usize;
-        debug_assert!(at % width.bytes() == 0 && at + width.bytes() <= self.len);
+        let at = self.data_offset.saturating_add(offset as usize);
+        let bytes = width.bytes();
+        assert!(
+            at % bytes == 0 && at.checked_add(bytes).is_some_and(|end| end <= self.len),
+            "register access out of bounds or unaligned"
+        );
         unsafe { self.ptr.add(at) }
     }
 }

@@ -27,7 +27,8 @@ on Linux (or WSL) too; `cargo clippy --target armv7-unknown-linux-gnueabihf` (af
 `rustup target add`) checks the 32-bit `mmap64` path without a cross linker.
 
 ## Features and Size
-- `profile` (default): TOML profile files, about 170 KB of the binary.
+- `profile` (default): JSON safety-profile files (`SafetyProfile::parse`, `--validate`), parsed with
+  zero external dependencies (`libc` is the only dependency in `Cargo.toml`).
 - `debug` (off): `/dev/mem` access for addresses outside UIO regions. Prebuilt binaries
   (`just build-targets`) are bring-up tools and enable it; Yocto / Buildroot recipes choose per
   image (development images with `debug`, release images without).
@@ -35,7 +36,7 @@ on Linux (or WSL) too; `cargo clippy --target armv7-unknown-linux-gnueabihf` (af
   register structs are `#[non_exhaustive]`). Check API changes against the previous release before
   tagging (e.g. `cargo semver-checks`).
 - The release profile uses `opt-level = "s"`, LTO, one codegen unit, `panic = "abort"` and
-  `strip`. On x86_64 Linux the CLI is about 545 KB, or 360 KB with `--no-default-features`.
+  `strip`. On x86_64 Linux the CLI is about 365 KB, or 360 KB with `--no-default-features`.
 - Most of the remaining size is the standard library's formatting and panic machinery; removing it
   needs a nightly `-Zbuild-std` build and is not part of the supported builds.
 

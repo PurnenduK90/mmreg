@@ -20,7 +20,7 @@ A Rust library and CLI for safe, concurrent access to 32-bit memory-mapped IO re
   active with active suppliers, have no clock gated in hardware (`clk_summary`), and, on an FPGA
   fabric only, have its FPGA manager `operating`. With `/dev/mem`, the device is held runtime-active
   while mapped.
-- **Safety profiles** (`--validate <profile.toml>`): extra register checks (clock, reset,
+- **Safety profiles** (`--validate <profile.json>`): extra register checks (clock, reset,
   isolation bits) that must pass before the target is touched.
 - **Alignment and bounds**: every access is 4-byte aligned and inside the declared window.
 - **Concurrency**: an inter-process lock around every access and read-modify-write: `flock` on
@@ -34,7 +34,7 @@ A Rust library and CLI for safe, concurrent access to 32-bit memory-mapped IO re
 mmreg read 0x4000_0000
 mmreg write 0x4000_0000 0xDEADBEEF
 mmreg --dec write 0x4000_0000 100        # or: mmreg write 0x4000_0000 0d100
-mmreg --validate zynqmp_gem3.toml read 0xFF0E_0000
+mmreg --validate zynqmp_gem3.json read 0xFF0E_0000
 mmreg --force read 0x4000_0000           # skip blueprint and pre-flight checks
 ```
 Numbers are hexadecimal with or without `0x` (underscores allowed); `0d` or `--dec` selects
@@ -62,13 +62,12 @@ fn main() -> Result<(), MmregError> {
 See [Library Usage](docs/users/04-library-usage.md) and the [API documentation](https://docs.rs/mmreg).
 
 ## Footprint
-The only runtime dependency is `libc`. TOML safety-profile files need the `profile` feature (on by
-default), which adds `toml` and `serde`. Release binaries (x86_64 Linux, stripped, LTO,
-`panic = "abort"`):
+The only dependency is `libc` (safety-profile JSON parsing is built in, behind the default
+`profile` feature). Release binaries (x86_64 Linux, stripped, LTO, `panic = "abort"`):
 
 | Build | Size |
 | :--- | ---: |
-| `cargo build --release` | ~545 KB |
+| `cargo build --release` | ~365 KB |
 | `cargo build --release --no-default-features` (no `--validate`) | ~360 KB |
 
 Prebuilt targets ([`targets.txt`](targets.txt)): `x86_64`, `aarch64`, `armv7` and `riscv64gc`

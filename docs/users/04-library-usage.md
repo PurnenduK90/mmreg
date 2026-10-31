@@ -83,7 +83,9 @@ fn main() -> Result<(), MmregError> {
 To make a **multi-register sequence** atomic across both threads and processes, hold the reentrant
 [`LockGuard`] returned by `dev.lock()`. On a `/dev/mem` window (`debug` builds) spanning several
 pages, the guard takes every page's lock in ascending address order, so the whole window is
-excluded for the sequence; the page lock files stay open only while the guard is held.
+excluded for the sequence; the page lock files stay open only while the guard is held. Such a
+window may cover at most `Device::MAX_SEQUENCE_PAGES` (64) pages for a sequence guard
+(`[E_LOCK_RANGE]` otherwise): open a smaller `Device` covering just the sequence's registers.
 
 ```rust
 use mmreg::{Device, MmregError};
@@ -248,7 +250,11 @@ fn main() -> Result<(), MmregError> {
 ## 6. Selecting the Backend (`MapperType`) and Safety Profiles
 
 Both [`Device::addr`] and [`Interface`] accept `.with_mapper_type(...)`, `.with_safety_profile(...)`,
-`.with_force(...)`, and `.with_custom_mapper(...)`:
+`.with_force(...)`, and `.with_custom_mapper(...)`.
+
+For off-target unit tests, `Device::uio(name)` / `Device::uio_path(path)` with
+`.with_custom_mapper(mock)` and `.with_force(true)` open even when no such UIO device exists: the
+window is then one page at address 0. Without `.with_force(true)` the device must exist.
 
 ```rust
 use mmreg::{Device, MapperType, MmregError, SafetyProfile};

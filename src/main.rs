@@ -546,12 +546,24 @@ mod tests {
             "0xA0000004"
         );
         assert_eq!(
+            run(&["mmreg", "--dec", "read", "adc0", "4"]).unwrap(),
+            "0xA0000004"
+        );
+        assert_eq!(
             run(&["mmreg", "-w", "8", "write", "axi_gpio", "0x08", "0x55"]).unwrap(),
             "Wrote 0x55 to axi_gpio+0x8"
         );
         assert_eq!(
             run(&["mmreg", "-w", "8", "write", "dac0", "0x08", "0x55"]).unwrap(),
             "Wrote 0x55 to dac0+0x8"
+        );
+        assert_eq!(
+            run(&["mmreg", "--dec", "-w", "16", "write", "dac0", "8", "85"]).unwrap(),
+            "Wrote 0x0055 to dac0+0x8"
+        );
+        assert_eq!(
+            run(&["mmreg", "-w", "64", "write", "axi_gpio", "0d8", "0x55"]).unwrap(),
+            "Wrote 0x0000000000000055 to axi_gpio+0x8"
         );
         assert_eq!(
             run(&["mmreg", "-f", "read", "0x4000_0000"]).unwrap(),

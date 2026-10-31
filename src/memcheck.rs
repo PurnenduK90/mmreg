@@ -221,9 +221,11 @@ pub(crate) fn uio_region_window(
         .ok_or_else(|| invalid("device path has no file name"))?;
     let mut region = UioMap::read(&map_dir)
         .ok_or_else(|| invalid("cannot read the region's sysfs addr/size"))?;
+    // Newer `uio_pdrv_genirq` reports a page-aligned `addr`, the registers' position in that page
+    // as `offset`, and a `size` counted from `addr`: the registers start at `addr + offset`.
+    // Older kernels report the registers' own `addr` and a `size` counted from it, used as is.
     let page = crate::mmio::page_size();
-    let addr_subpage = region.addr & (page - 1);
-    if addr_subpage == 0 {
+    if region.addr & (page - 1) == 0 {
         if let Some(offs) = fs::read_to_string(map_dir.join("offset"))
             .ok()
             .and_then(|s| parse_u64_radix(&s, 16).ok())
@@ -233,8 +235,6 @@ pub(crate) fn uio_region_window(
                 region.size -= offs;
             }
         }
-    } else if (region.size & (page - 1)) == 0 && addr_subpage < region.size {
-        region.size -= addr_subpage;
     }
     if region.size == 0 || usize::try_from(region.size).is_err() {
         return Err(invalid("region size is zero or overflows usize"));
@@ -918,13 +918,15 @@ e0000000-e0000fff : xuartps
         assert_eq!((win_off.addr, win_off.size), (0xA000_0100, 0xF00));
         let _ = fs::remove_file(map0.join("offset"));
 
-        // Region window lookup with non-page-aligned `addr` and page-aligned `size`
+        // Non-page-aligned `addr` (older kernels): `size` counts from `addr` and is kept whole,
+        // the same window `open_addr` sees, so the last registers stay reachable.
         fs::write(map0.join("addr"), "0xa0000100\n").unwrap();
         let win_unaligned = uio_region_window(&sysfs_uio, &dev_path, 0).unwrap();
         assert_eq!(
             (win_unaligned.addr, win_unaligned.size),
-            (0xA000_0100, 0xF00)
+            (0xA000_0100, 0x1000)
         );
+        assert!(find_uio_region(&sysfs_uio, &dev_dir, 0xA000_10FC, 4).is_some());
         fs::write(map0.join("addr"), "0xa0000000\n").unwrap();
 
         assert_eq!(

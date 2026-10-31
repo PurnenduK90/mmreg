@@ -165,6 +165,11 @@ impl DeviceBuilder {
     }
 
     /// Uses `mapper` instead of `/dev/mem` or UIO (for tests or custom kernel drivers).
+    ///
+    /// Together with [`DeviceBuilder::with_force`]`(true)`, [`Device::uio`] and
+    /// [`Device::uio_path`] open even when the UIO device does not exist (off-target unit tests):
+    /// the window is then one page at address 0, locked with that page's lock file. Without
+    /// `with_force`, the UIO device must exist and its region gives the window.
     #[inline]
     pub fn with_custom_mapper(mut self, mapper: Box<dyn MemoryMapper>) -> Self {
         self.custom_mapper = Some(mapper);
@@ -192,12 +197,15 @@ impl DeviceBuilder {
                             region_index: self.region_index,
                         },
                     ),
+                    // Off-target tests: a custom mapper with `with_force(true)` stands in for a
+                    // UIO device that does not exist (one page at address 0; see
+                    // `with_custom_mapper`).
                     Err(_) if has_custom && self.force_map => (
-                        uio_name,
+                        uio_name.clone(),
                         0,
                         page_size() as usize,
                         MapperType::Uio {
-                            device_path: "/dev/uio0".to_string(),
+                            device_path: uio_name,
                             region_index: self.region_index,
                         },
                     ),
@@ -407,10 +415,10 @@ impl Device {
     /// other threads and processes for the entire sequence.
     ///
     /// A UIO device has one lock. A `/dev/mem` or custom-mapper window takes the page lock of
-    /// every page it covers (striped across at most 64 page locks so large apertures cannot
-    /// exhaust file descriptors), in ascending address order, so a sequence spanning pages
-    /// excludes accesses to all of them; each page lock file stays open only while the guard is
-    /// held.
+    /// every page it covers, in ascending address order, so a sequence spanning pages excludes
+    /// accesses to all of them; each page lock file stays open only while the guard is held.
+    /// Such a window may span at most [`Device::MAX_SEQUENCE_PAGES`] pages
+    /// ([`MmregError::LockRangeTooLarge`] otherwise): open a smaller window for the sequence.
     pub fn lock(&self) -> Result<LockGuard<'_>, MmregError> {
         if self.uio_lock.is_some() {
             return self.lock_at(self.base_address);
@@ -421,32 +429,34 @@ impl Device {
         if first == last {
             return self.lock_at(self.base_address);
         }
-        let total_pages = (last - first) / page + 1;
-        let lock_pages = total_pages.min(Self::MAX_SEQUENCE_PAGES);
-        let mut locks = Vec::with_capacity(lock_pages as usize);
-        for i in 0..lock_pages {
-            locks.push(DeviceLock::open_page(first.wrapping_add(i * page))?);
+        let pages = (last - first) / page + 1;
+        if pages > Self::MAX_SEQUENCE_PAGES {
+            return Err(MmregError::LockRangeTooLarge {
+                name: self.name.clone(),
+                pages,
+                max_pages: Self::MAX_SEQUENCE_PAGES,
+            });
+        }
+        let mut locks = Vec::with_capacity(pages as usize);
+        for i in 0..pages {
+            locks.push(DeviceLock::open_page(first + i * page)?);
         }
         lock_all(locks)
     }
 
-    const MAX_SEQUENCE_PAGES: u64 = 64;
+    /// Most pages a `/dev/mem` or custom-mapper sequence guard ([`Device::lock`]) may hold: one
+    /// open lock file each while the guard lives.
+    pub const MAX_SEQUENCE_PAGES: u64 = 64;
 
-    #[inline]
-    fn page_lock_addr(&self, address: u64) -> u64 {
-        let page = page_size();
-        let first = self.base_address & !(page - 1);
-        let target = address & !(page - 1);
-        let page_index = (target.wrapping_sub(first)) / page;
-        first.wrapping_add((page_index % Self::MAX_SEQUENCE_PAGES) * page)
-    }
-
+    /// Takes the lock for one access at physical `address`: the UIO device's lock, or the lock
+    /// file of the exact physical page holding the register (the documented protocol, shared with
+    /// the CLI and other programs).
     fn lock_at(&self, address: u64) -> Result<LockGuard<'_>, MmregError> {
         if let Some(uio_lock) = &self.uio_lock {
             return uio_lock.lock();
         }
         let page = page_size();
-        let lock_addr = self.page_lock_addr(address);
+        let lock_addr = address & !(page - 1);
         if lock_addr == (self.base_address & !(page - 1)) {
             if let Some(dev_lock) = self.base_page_lock.get() {
                 return dev_lock.lock();
@@ -845,18 +855,61 @@ mod tests {
         assert_eq!(step.load(Ordering::SeqCst), 2);
         assert_eq!(dev.read_u32(page as u32).unwrap(), 2);
 
-        // Large apertures (> 64 pages) stripe across 64 page locks without exhausting FDs.
-        let large_base = 0x7B00_0000u64;
-        let large_dev = Device::addr(large_base, 100 * page as usize)
+        // Boundary: exactly MAX_SEQUENCE_PAGES (64) pages succeeds; 65 pages is refused with E_LOCK_RANGE.
+        let max_pages = Device::MAX_SEQUENCE_PAGES as usize;
+        let boundary_base = 0x7A80_0000u64;
+        let max_dev = Device::addr(boundary_base, max_pages * page as usize)
             .with_force(true)
-            .with_custom_mapper(ByteMockMapper::boxed(100 * page as usize))
+            .with_custom_mapper(ByteMockMapper::boxed(max_pages * page as usize))
             .open()
             .unwrap();
-        let large_guard = large_dev.lock().unwrap();
-        let high_off = (99 * page) as u32;
-        large_dev.write_u32(high_off, 0xABCD_1234).unwrap();
-        assert_eq!(large_dev.read_u32(high_off).unwrap(), 0xABCD_1234);
-        drop(large_guard);
+        {
+            let _g = max_dev.lock().unwrap();
+            let last_page_off = ((max_pages - 1) * page as usize) as u32;
+            max_dev.write_u32(last_page_off, 0xCAFE_1234).unwrap();
+            assert_eq!(max_dev.read_u32(last_page_off).unwrap(), 0xCAFE_1234);
+        }
+        let over_dev = Device::addr(boundary_base, (max_pages + 1) * page as usize)
+            .with_force(true)
+            .with_custom_mapper(ByteMockMapper::boxed((max_pages + 1) * page as usize))
+            .open()
+            .unwrap();
+        assert_eq!(over_dev.lock().unwrap_err().code(), "E_LOCK_RANGE");
+
+        // Large windows: single accesses lock the exact physical page (so they exclude the CLI
+        // and other programs locking that page), and a sequence guard over more than
+        // MAX_SEQUENCE_PAGES pages is refused.
+        let large_base = 0x7B00_0000u64;
+        let large_dev = Arc::new(
+            Device::addr(large_base, 100 * page as usize)
+                .with_force(true)
+                .with_custom_mapper(ByteMockMapper::boxed(100 * page as usize))
+                .open()
+                .unwrap(),
+        );
+        assert_eq!(large_dev.lock().unwrap_err().code(), "E_LOCK_RANGE");
+
+        let page99 = DeviceLock::open_page(large_base + 99 * page).unwrap();
+        let held = page99.lock().unwrap();
+        let step = Arc::new(AtomicUsize::new(0));
+        let (step_bg, dev_bg) = (Arc::clone(&step), Arc::clone(&large_dev));
+        let bg = std::thread::spawn(move || {
+            step_bg.store(1, Ordering::SeqCst);
+            dev_bg.write_u32((99 * page) as u32, 0xABCD_1234).unwrap();
+            step_bg.store(2, Ordering::SeqCst);
+        });
+        while step.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(
+            step.load(Ordering::SeqCst),
+            1,
+            "page 99 access waits for its own page lock"
+        );
+        drop(held);
+        bg.join().unwrap();
+        assert_eq!(large_dev.read_u32((99 * page) as u32).unwrap(), 0xABCD_1234);
     }
 
     #[test]
@@ -899,6 +952,47 @@ mod tests {
             .unwrap();
         mock_uio.write_u32(4, 0x55AA_55AA).unwrap();
         assert_eq!(mock_uio.read_u32(4).unwrap(), 0x55AA_55AA);
+
+        // Without `with_force(true)`, `Device::uio` still requires the UIO device to exist even
+        // when a custom mapper is supplied.
+        assert_eq!(
+            Device::uio("nonexistent_uio_device_xyz")
+                .with_custom_mapper(ByteMockMapper::boxed(page_size() as usize))
+                .open()
+                .err()
+                .unwrap()
+                .code(),
+            "E_UIO_NOT_FOUND"
+        );
+
+        // `Device::uio_path` with `.with_custom_mapper(...)` + `.with_force(true)` and builder
+        // getters (`name`, `base_address`, `size`, `device_path`, `warnings`, `read`/`write`).
+        let mock_path = Device::uio_path("/dev/nonexistent_uio99")
+            .region(1)
+            .with_name("custom_uio_label")
+            .with_read_only(false)
+            .with_force(true)
+            .with_custom_mapper(ByteMockMapper::boxed(page_size() as usize))
+            .open()
+            .unwrap();
+        assert_eq!(mock_path.name(), "custom_uio_label");
+        assert_eq!(mock_path.base_address(), 0);
+        assert_eq!(mock_path.size(), page_size() as usize);
+        assert!(!mock_path.is_read_only());
+        assert!(mock_path.device_path().is_none());
+        assert!(mock_path.warnings().is_empty());
+        mock_path.write(2, Width::U16, 0xBEEF).unwrap();
+        assert_eq!(mock_path.read(2, Width::U16).unwrap(), 0xBEEF);
+
+        // Invalid `Device::addr` windows (`size == 0` or `base + size > u64::MAX`).
+        assert_eq!(
+            Device::addr(0x4000_0000, 0).open().err().unwrap().code(),
+            "E_OUT_OF_BOUNDS"
+        );
+        assert_eq!(
+            Device::addr(u64::MAX, 4).open().err().unwrap().code(),
+            "E_OUT_OF_BOUNDS"
+        );
     }
 
     #[cfg(unix)]

@@ -53,6 +53,7 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 | `E_READ_ONLY` | A register write, `update_u32`, or `irq_unmask` was attempted on a `Device` opened with `.read_only()`. | Open the `Device` without `.read_only()` and ensure write permission (`0660`) on `/dev/uioN`. |
 | `E_LOCK_OPEN` | The lock file cannot be opened: `/dev/uioN` (UIO devices) or the page lock file (`/dev/mem`). | For UIO, give the user read access to `/dev/uioN`; for `/dev/mem`, pre-create `/run/lock/mmreg` with mode `1777` (`sudo mkdir -m 1777 -p /run/lock/mmreg`) if `/run/lock` is root-only (`0755`). |
 | `E_LOCK_ACQUIRE` | `flock` on the lock file failed. | Check the filesystem supports `flock`. |
+| `E_LOCK_RANGE` | `dev.lock()` on a `/dev/mem` or custom-mapper window covering more than 64 pages (one open lock file per page). | Open a smaller `Device` covering only the registers of the sequence. |
 
 ## API
 

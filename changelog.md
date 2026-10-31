@@ -56,7 +56,6 @@
     * Concurrency & Sequence Guards (`src/lock.rs`)
         * Per-process `(st_dev, st_ino)` `SharedLock` registry so multiple `Device` handles in one process share a single open lock file descriptor without `flock(2)` self-deadlock and synchronize threads via a reentrant mutex + `Condvar`
         * Reentrant sequence guard (`let _g = dev.lock()?;` returning `LockGuard`) held across multi-register sequences while preserving the inter-process `flock(2)` protocol
-        * On a `/dev/mem` or custom-mapper window spanning several pages, `dev.lock()` takes every page lock in ascending address order, so the sequence excludes accesses to the whole window (page lock files are open only while the guard is held)
     * UIO Interrupts (`src/mmio.rs`, `src/device.rs`)
         * `Device::irq_unmask()` (writes `1u32` to `/dev/uioN`) and `Device::irq_wait(timeout) -> Result<Option<u32>, MmregError>` (`poll(POLLIN)` + 4-byte `read`)
         * New error variants and codes: `[E_UIO_NOT_FOUND]` (listing available UIO names), `[E_UIO_AMBIGUOUS]`, `[E_UIO_REQUIRED]`, `[E_UIO_IRQ]`, and `[E_READ_ONLY]`
@@ -67,3 +66,13 @@
         * CLI adds `-w` / `--width <8|16|32|64>`, `mmreg read|write <uio-name> <offset> [value]` (works without the `debug` feature), and `-V` / `--version` showing enabled features
     * Documentation
         * Added UIO setup guide (`generic-uio`, `uio_pdrv_genirq.of_id`, `udev` rules) in `docs/users/02-installation.md` and generated-code guide (including `w1c`/`w1p` field rules) in `docs/users/04-library-usage.md`
+* **[1.1.1]** Multi-Page Sequence Lock Bound, Zero-Alloc Single Locks, Sub-Page UIO Offset & CLI Hex-Name Fix
+    * Concurrency & Sequence Guards (`src/lock.rs`, `src/device.rs`)
+        * On a `/dev/mem` or custom-mapper window spanning several pages, `dev.lock()` takes every page lock in ascending address order so the sequence excludes accesses to the whole window (page lock files are open only while the guard is held); windows over `Device::MAX_SEQUENCE_PAGES` (64) pages are refused with `MmregError::LockRangeTooLarge` (`[E_LOCK_RANGE]`). Single accesses always lock their own physical page's file, as the CLI and other programs do
+        * `LockGuard` stores single-lock acquisitions inline (`HeldLocks::One`) so single-register reads/writes and single-page/UIO `dev.lock()` calls do not allocate a `Vec` on the heap
+    * UIO Regions & Off-Target Testing (`src/memcheck.rs`, `src/device.rs`)
+        * Non-page-aligned UIO regions: newer kernels' `/sys/class/uio/uioN/maps/mapM/offset` attribute is applied when `addr` is page-aligned; an unaligned `addr` keeps its full `size` (counted from `addr`), the same window `open_addr` sees
+        * `Device::uio` and `Device::uio_path` with `.with_custom_mapper(...)` and `.with_force(true)` open a 1-page mock window at address `0` even when `/sys/class/uio` is absent on the host
+    * CLI & Diagnostics (`src/main.rs`, `src/error.rs`)
+        * UIO device names consisting of valid hex characters (`adc0`, `dac0`, `cafe`) are no longer mistaken for extra address arguments in `mmreg read <uio-name> <offset>` and `mmreg write <uio-name> <offset> <value>`
+        * Fixed spacing before `Remediation:` in `MmregError::UnalignedWidthAccess` display formatting

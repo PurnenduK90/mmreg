@@ -76,9 +76,9 @@ without a matching toolchain, copy the musl binary (e.g.
 
 You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) root filesystem using either a **source-built Cargo recipe** (Rust $\ge 1.75$: Yocto 5.0 "scarthgap" or newer) or a **pre-built binary recipe** (compatible with any Yocto release).
 
-### Option A: Building from Source with `inherit cargo` (`mmreg_1.1.0.bb`)
+### Option A: Building from Source with `inherit cargo` (`mmreg_1.1.1.bb`)
 
-Create `meta-custom/recipes-devtools/mmreg/mmreg_1.1.0.bb`:
+Create `meta-custom/recipes-devtools/mmreg/mmreg_1.1.1.bb`:
 
 ```bitbake
 SUMMARY = "Safe, concurrent 8/16/32/64-bit memory-mapped IO register access CLI and library"

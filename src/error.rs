@@ -109,6 +109,13 @@ pub enum MmregError {
     LockOpen { lock_path: PathBuf, details: String },
     /// Failed to acquire exclusive lock on lock file.
     LockAcquire { details: String },
+    /// A sequence guard ([`crate::Device::lock`]) on a `/dev/mem` or custom-mapper window would
+    /// hold more page locks than [`crate::Device::MAX_SEQUENCE_PAGES`].
+    LockRangeTooLarge {
+        name: String,
+        pages: u64,
+        max_pages: u64,
+    },
     /// Requested register name was not found on the `Interface`.
     RegisterNotFound {
         interface_name: String,
@@ -173,6 +180,7 @@ impl MmregError {
             MmregError::OutOfBoundsAccess { .. } => "E_OUT_OF_BOUNDS",
             MmregError::LockOpen { .. } => "E_LOCK_OPEN",
             MmregError::LockAcquire { .. } => "E_LOCK_ACQUIRE",
+            MmregError::LockRangeTooLarge { .. } => "E_LOCK_RANGE",
             MmregError::RegisterNotFound { .. } => "E_REG_NOT_FOUND",
             MmregError::SubRegisterNotFound { .. } => "E_SUBREG_NOT_FOUND",
             MmregError::InvalidSubRegister { .. } => "E_SUBREG_RANGE",
@@ -416,6 +424,16 @@ impl fmt::Display for MmregError {
                 f,
                 "[{}] Failed to acquire exclusive inter-process lock: {}.",
                 code, details
+            ),
+            MmregError::LockRangeTooLarge {
+                name,
+                pages,
+                max_pages,
+            } => write!(
+                f,
+                "[{}] Sequence lock on '{}' would hold {} page locks (at most {}). \
+                 Remediation: Open a smaller Device window covering only the registers of the sequence.",
+                code, name, pages, max_pages
             ),
             MmregError::RegisterNotFound {
                 interface_name,
@@ -664,6 +682,14 @@ mod tests {
                     details: "Resource deadlock".into(),
                 },
                 "E_LOCK_ACQUIRE",
+            ),
+            (
+                MmregError::LockRangeTooLarge {
+                    name: "dma".into(),
+                    pages: 100,
+                    max_pages: 64,
+                },
+                "E_LOCK_RANGE",
             ),
             (
                 MmregError::RegisterNotFound {

@@ -66,10 +66,13 @@ sequenceDiagram
      excluded by mmreg.
    - **`/dev/mem` and custom mappers:** on `<lock dir>/<page base>-<page end>.lock` for the page
      holding the register. An aligned register never spans two pages, so a single-register access
-     takes one page lock; an explicit `dev.lock()` sequence guard acquires the page locks of every
-     page covered by the window (striped across at most 64 page locks so large apertures cannot
-     exhaust file descriptors) in ascending address order and releases them in reverse order on
-     drop, preventing deadlocks across overlapping windows.
+     takes the lock of its own physical page, the same file the CLI and any other program lock;
+     an explicit `dev.lock()` sequence guard acquires the page locks of every page covered by the
+     window in ascending address order and releases them in reverse order on drop, preventing
+     deadlocks across overlapping windows. A guard holds one open lock file per page, so it is
+     refused (`[E_LOCK_RANGE]`) for windows over `Device::MAX_SEQUENCE_PAGES` (64) pages. Lock
+     files are never shared between pages (no striping): a lock is only meaningful if every
+     participant derives the same file from the physical address.
 2. **Intra-process `(st_dev, st_ino)` registry & reentrant sequence guard**:
    `flock(2)` belongs to an open file description (`struct file`), so two independent `open()` calls
    in the same process would deadlock on each other if acquired on the same thread, while two

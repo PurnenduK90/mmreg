@@ -16,23 +16,41 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Lint the minimal (`--no-default-features`), default and full (`--all-features`) builds
+# Lint the minimal (`--no-default-features`), default and full (`--all-features`) builds, plus the
+# C ABI crate (bindings/c)
 clippy:
     cargo clippy --all-targets --no-default-features -- -D warnings
     cargo clippy --all-targets -- -D warnings
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 lint: fmt-check clippy
 
-# Unit and doc tests for the minimal, default and full builds
+# Unit and doc tests for the minimal, default and full builds, and the C ABI crate. Its C interop
+# test compiles bindings/c/examples/test_capi.c against target/debug/libmmreg.a, and fails instead
+# of skipping when `cc` or `libmmreg.a` is missing.
+[unix]
 test:
     cargo test --no-default-features
     cargo test
-    cargo test --all-features
+    cargo build -p mmreg-capi
+    MMREG_REQUIRE_C_TESTS=1 cargo test --workspace --all-features
+
+# The C interop test is Unix-only, so Windows needs no MMREG_REQUIRE_C_TESTS
+[windows]
+test:
+    cargo test --no-default-features
+    cargo test
+    cargo test --workspace --all-features
+
+# Python binding tests against target/debug/libmmreg.so
+[unix]
+test-python:
+    cargo build -p mmreg-capi
+    MMREG_LIB_PATH=target/debug/libmmreg.so PYTHONPATH=bindings/python python3 -m unittest discover -s bindings/python/tests -v
 
 # Line coverage, failing under 80%
 coverage:
-    cargo llvm-cov --all-targets --all-features --fail-under-lines 80
+    cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 80
 
 # API docs with warnings denied (catches broken intra-doc links)
 [unix]

@@ -32,6 +32,12 @@ on Linux (or WSL) too; `cargo clippy --target armv7-unknown-linux-gnueabihf` (af
 - `debug` (off): `/dev/mem` access for addresses outside UIO regions. Prebuilt binaries
   (`just build-targets`) are bring-up tools and enable it; Yocto / Buildroot recipes choose per
   image (development images with `debug`, release images without).
+- The C ABI is not a feature but the workspace member `mmreg-capi` (`bindings/c`): `cargo build
+  --release -p mmreg-capi` builds `libmmreg.a` and `libmmreg.so` (UIO only, no JSON parser; add
+  `--features debug` for `/dev/mem`), used by C programs and by the `ctypes` binding in
+  `bindings/python/mmreg`. Plain `cargo build` / `cargo test` cover only the `mmreg` crate
+  (`default-members`); `just` runs the workspace. On Windows MSVC, build the CLI and the C library
+  in separate invocations: both write `mmreg.pdb`.
 - **SemVer:** features are additive; the public API is stable across 1.x (public enums and the
   register structs are `#[non_exhaustive]`). Check API changes against the previous release before
   tagging (e.g. `cargo semver-checks`).

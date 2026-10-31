@@ -42,7 +42,7 @@ mod validation;
 pub use device::{uio, Device, DeviceBuilder};
 pub use error::MmregError;
 pub use interface::Interface;
-pub use lock::LockGuard;
+pub use lock::{LockGuard, OwnedLockGuard};
 pub use memregs::{MapperType, MemoryMapper, Width};
 pub use register::{Register, SubRegister};
 pub use validation::{SafetyProfile, ValidationCheck};

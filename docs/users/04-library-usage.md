@@ -303,3 +303,116 @@ fn main() -> Result<(), MmregError> {
 [`MmregError`](../../src/error.rs) is an enum with one variant per failure. `err.code()` returns the
 stable code (e.g. `"E_BLUEPRINT_UNMAPPED"`), and `Display` prints `[CODE]`, the failing resource or
 path, and a `Remediation:` hint. All codes are listed in [Troubleshooting](06-troubleshooting.md).
+
+---
+
+## 8. C ABI (`bindings/c`: `mmreg.h`, `libmmreg.a` / `libmmreg.so`)
+
+The `mmreg-capi` crate in `bindings/c` builds a panic-free C ABI (`bindings/c/include/mmreg.h`
+and `bindings/c/mmreg.pc`) that replaces project-local C UIO helper libraries while sharing the exact same lock
+protocol and pre-flight validation.
+
+### Building & Linking a C Program
+
+```sh
+# Build static (`libmmreg.a`) and shared (`libmmreg.so`) libraries
+cargo build --release -p mmreg-capi
+
+# Link statically without Cargo at link time (or via `pkg-config --cflags --libs --static mmreg`)
+cc -O2 -Ibindings/c/include my_daemon.c target/release/libmmreg.a -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc -o my_daemon
+```
+
+### C Example
+
+```c
+#include "mmreg.h"
+#include <stdio.h>
+
+#define CTRL_REG        0x00u
+#define CTRL_EN_MASK    0x00000001u
+#define CTRL_EN_SHIFT   0u
+#define STATUS_REG      0x04u
+#define IRQ_STATUS_REG  0x0Cu
+
+int main(void) {
+    mmreg_dev *dev = mmreg_open_uio("axi_gpio", 0);
+    if (!dev) {
+        fprintf(stderr, "open failed [%s]: %s\n", mmreg_last_error_code(), mmreg_last_error());
+        return 1;
+    }
+
+    /* Atomic read-modify-write under a single lock */
+    uint32_t ctrl = 0;
+    if (mmreg_update32(dev, CTRL_REG, CTRL_EN_MASK, MMREG_PREP(1u, CTRL_EN_MASK, CTRL_EN_SHIFT), &ctrl) != 0) {
+        fprintf(stderr, "update failed: %s\n", mmreg_last_error());
+        mmreg_close(dev);
+        return 1;
+    }
+    printf("EN bit = %u\n", MMREG_FIELD(ctrl, CTRL_EN_MASK, CTRL_EN_SHIFT));
+
+    /* Hold a reentrant lock across a multi-register sequence */
+    if (mmreg_lock(dev) == 0) {
+        uint32_t status = 0;
+        mmreg_rd32(dev, STATUS_REG, &status);
+        mmreg_wr32(dev, 0x08u, status);
+        mmreg_unlock(dev);
+    }
+
+    /* Wait up to 500 ms for a UIO interrupt (1 = fired, 0 = timeout, -1 = error) */
+    uint32_t irq_count = 0;
+    int rc = mmreg_irq_wait(dev, 500, &irq_count);
+    if (rc == 1) {
+        mmreg_wr32(dev, IRQ_STATUS_REG, 1u); /* clear W1C cause in device first */
+        mmreg_irq_unmask(dev);               /* then unmask kernel IRQ line */
+    }
+
+    mmreg_close(dev);
+    return 0;
+}
+```
+
+---
+
+## 9. Python Binding (`bindings/python/mmreg`)
+
+The pure-Python package in `bindings/python/mmreg` uses standard-library `ctypes` over
+`libmmreg.so`, so target boards need no compiler, PyO3, or wheel build.
+
+```python
+from mmreg import Device, MmregError, find_uio
+
+print("UIO node:", find_uio("axi_gpio"))
+
+with Device.open_uio("axi_gpio") as d:
+    # Offset reads, writes, and atomic update_u32
+    status = d.read_u32(0x04)
+    d.update_u32(0x00, 0x0000_00F0, 0x5 << 4)
+
+    # Reentrant sequence lock context manager
+    with d.lock():
+        d.write_u32(0x10, 0x1234_5678)
+        d.write_u32(0x14, status)
+
+    # Inline register and bitfield definitions for interactive experiments without a block file
+    d.define("CTRL", offset=0x08, fields={"EN": "0", "MODE": "7:4"})
+    d.CTRL.EN = 1
+    d.CTRL.MODE = 5          # a value wider than the field raises [E_INVALID_ARG]
+    print(f"CTRL = 0x{int(d.CTRL):08X}, MODE = {int(d.CTRL.MODE)}")
+
+    # Write-1-to-clear fields: written directly, and written as 0 when another field is updated
+    d.define("ISR", offset=0x0C, fields={"DONE": "0", "ERR": "1", "MODE": "7:4"}, w1c={"DONE", "ERR"})
+    if d.read_u32(0x0C) & 0x1:
+        d.ISR.DONE = 1       # clears DONE only; a pending ERR is left alone
+
+    # Wait for an interrupt (None waits without a timeout)
+    if d.irq_wait(500) is not None:
+        d.irq_unmask()
+```
+
+Hardware is read only when asked for: `int(d.CTRL)`, `d.CTRL.read()`, or `d.CTRL.EN == 1`.
+`repr()` (and so a REPL or debugger showing `d.ISR`) prints the definition without reading the
+register, so read-to-clear registers are not cleared by inspecting them. Register and field names
+that would shadow existing attributes (`size`, `lock`, `read`, ...) are rejected. Values outside
+the access width (`write_u8(0, 0x100)`, negative offsets or timeouts) raise `[E_INVALID_ARG]`
+instead of being truncated. When it first loads `libmmreg`, the package checks that it has the
+same major version (`mmreg_version()`).

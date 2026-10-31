@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmreg"
+version = "1.2.0"
+description = "Safe, concurrent 8/16/32/64-bit memory-mapped IO (UIO and /dev/mem) register access for Linux (ctypes binding over libmmreg)."
+readme = "../../README.md"
+license = { text = "MIT" }
+authors = [{ name = "Purnendu Kumar", email = "purnendu@kumargaur.com" }]
+requires-python = ">=3.8"
+dependencies = []
+keywords = ["embedded", "mmio", "uio", "registers", "hardware"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mmreg*"]

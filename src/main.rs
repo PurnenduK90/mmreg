@@ -468,7 +468,10 @@ mod tests {
             .unwrap()
             .contains("Usage:"));
         let ver = run(&["mmreg", "--version"]).unwrap();
-        assert!(ver.starts_with("mmreg 1.1.") && ver.contains("features:"));
+        assert!(
+            ver.starts_with(concat!("mmreg ", env!("CARGO_PKG_VERSION")))
+                && ver.contains("features:")
+        );
         assert_eq!(run(&["mmreg", "-V"]).unwrap(), ver);
 
         assert!(run(&["mmreg"]).unwrap_err().contains("[E_CLI_MISSING_CMD]"));

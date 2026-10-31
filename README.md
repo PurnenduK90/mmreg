@@ -6,9 +6,9 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-blue.svg?maxAge=3600)](https://www.rust-lang.org/)
 [![Build Status](https://github.com/PurnenduK90/mmreg/workflows/CI/badge.svg)](https://github.com/PurnenduK90/mmreg/actions)
 
-A Rust library and CLI for safe, concurrent access to 8/16/32/64-bit memory-mapped IO registers via
-Linux Userspace I/O (`/dev/uioN`) and `/dev/mem`: a `devmem` and UIO helper-library replacement that
-refuses accesses likely to hang the bus instead of performing them.
+A Rust, C, and Python library and CLI for safe, concurrent access to 8/16/32/64-bit memory-mapped
+IO registers via Linux Userspace I/O (`/dev/uioN`) and `/dev/mem`: a `devmem` and UIO helper-library
+replacement that refuses accesses likely to hang the bus instead of performing them.
 
 ## Features
 - **UIO first, `/dev/mem` only in debug builds**: open UIO devices directly by name
@@ -38,6 +38,12 @@ refuses accesses likely to hang the bus instead of performing them.
 - **Structured errors & silent library**: every failure is a `MmregError` with a stable `[E_*]`
   code and remediation hint; the library never writes to `stderr` (non-fatal pre-flight warnings are
   returned via `dev.warnings()`).
+- **C and Python bindings (`bindings/`)**: [`bindings/c`](bindings/c) builds static
+  (`libmmreg.a`) and shared (`libmmreg.so`) C libraries (`cargo build --release -p mmreg-capi`)
+  with [`mmreg.h`](bindings/c/include/mmreg.h), [`mmreg.pc`](bindings/c/mmreg.pc) and a
+  [C example](bindings/c/examples/test_capi.c); [`bindings/python`](bindings/python) is a
+  compiler-free `ctypes` package over `libmmreg.so` supporting context managers and inline register
+  definitions (`d.define("CTRL", offset=0x8, fields={"EN": "0"})`).
 
 ## CLI
 ```sh

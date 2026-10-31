@@ -110,6 +110,11 @@ impl SharedLock {
             self.cvar.notify_one();
         }
     }
+
+    fn is_owned_by(&self, thread: ThreadId) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.owner == Some(thread) && state.depth > 0
+    }
 }
 
 type LockTable = Vec<(FileKey, Weak<SharedLock>)>;
@@ -184,6 +189,20 @@ enum HeldLocks {
     Many(Vec<Arc<SharedLock>>),
 }
 
+impl HeldLocks {
+    fn release_all(&self) {
+        match self {
+            HeldLocks::None => {}
+            HeldLocks::One(lock) => lock.release(),
+            HeldLocks::Many(locks) => {
+                for lock in locks.iter().rev() {
+                    lock.release();
+                }
+            }
+        }
+    }
+}
+
 /// One or more held device or page locks, released when dropped.
 ///
 /// Returned by [`crate::Device::lock`]. Reentrant on the holding thread: while a `LockGuard` is
@@ -195,6 +214,18 @@ pub struct LockGuard<'a> {
     _marker: PhantomData<(&'a (), *const ())>,
 }
 
+impl LockGuard<'_> {
+    /// Detaches the guard from the [`crate::Device`] borrow, for layers that hold a lock across
+    /// calls (the C ABI's `mmreg_lock` / `mmreg_unlock`). The locks stay held by this thread until
+    /// the returned [`OwnedLockGuard`] is dropped.
+    pub fn into_owned(mut self) -> OwnedLockGuard {
+        OwnedLockGuard {
+            held: std::mem::replace(&mut self.held, HeldLocks::None),
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl std::fmt::Debug for LockGuard<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LockGuard").finish_non_exhaustive()
@@ -203,15 +234,39 @@ impl std::fmt::Debug for LockGuard<'_> {
 
 impl Drop for LockGuard<'_> {
     fn drop(&mut self) {
+        self.held.release_all();
+    }
+}
+
+/// A [`LockGuard`] detached from its [`crate::Device`] borrow by [`LockGuard::into_owned`],
+/// releasing its locks when dropped. Like `LockGuard`, it is not `Send`: the locks belong to the
+/// thread that took them.
+pub struct OwnedLockGuard {
+    held: HeldLocks,
+    _marker: PhantomData<*const ()>,
+}
+
+impl std::fmt::Debug for OwnedLockGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedLockGuard").finish_non_exhaustive()
+    }
+}
+
+impl OwnedLockGuard {
+    /// Whether the calling thread holds every lock in this guard.
+    pub fn is_owned_by_current_thread(&self) -> bool {
+        let current = std::thread::current().id();
         match &self.held {
-            HeldLocks::None => {}
-            HeldLocks::One(lock) => lock.release(),
-            HeldLocks::Many(locks) => {
-                for lock in locks.iter().rev() {
-                    lock.release();
-                }
-            }
+            HeldLocks::None => true,
+            HeldLocks::One(lock) => lock.is_owned_by(current),
+            HeldLocks::Many(locks) => locks.iter().all(|l| l.is_owned_by(current)),
         }
+    }
+}
+
+impl Drop for OwnedLockGuard {
+    fn drop(&mut self) {
+        self.held.release_all();
     }
 }
 

@@ -1,0 +1,15 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: mmreg
+Description: Safe, concurrent 8/16/32/64-bit memory-mapped IO (UIO and /dev/mem) register access library
+URL: https://github.com/PurnenduK90/mmreg
+Version: 1.2.0
+Libs: -L${libdir} -lmmreg
+# Native libraries Rust's std needs when linking libmmreg.a (glibc targets), as printed by
+# `cargo rustc -p mmreg-capi -- --print native-static-libs`.
+# musl targets need none of them.
+Libs.private: -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
+Cflags: -I${includedir}

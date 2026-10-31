@@ -2,7 +2,9 @@
 
 ## Module Layout
 
-Each module has one job; only `mmio.rs` contains `unsafe` memory and OS calls.
+Each module has one job; `mmio.rs` contains `unsafe` memory and OS calls. The `extern "C"` FFI
+boundary is a separate crate, `mmreg-capi` in `bindings/c` (a member of the Cargo workspace), so
+the `mmreg` crate builds only as a Rust library.
 
 ```text
 src/
@@ -18,12 +20,24 @@ src/
 ├── lock.rs        # Per-process (st_dev, st_ino) lock registry, reentrant LockGuard, flock(2)
 ├── validation.rs  # SafetyProfile / ValidationCheck; JSON parsing behind the `profile` feature
 └── parse.rs       # Zero-allocation integer parsing for CLI, profiles and sysfs
+
+bindings/
+├── c/             # mmreg-capi crate: libmmreg.so / libmmreg.a
+│   ├── src/lib.rs           # panic-free `mmreg_*` exports and thread-local errors
+│   ├── src/interop_tests.rs # cross-thread and two-process C <-> Rust lock tests
+│   ├── build.rs             # SONAME libmmreg.so.<major>
+│   ├── include/mmreg.h      # C header (checked against the exports by a unit test)
+│   ├── mmreg.pc             # pkg-config file
+│   └── examples/test_capi.c # C example and self-test
+└── python/        # pure-Python ctypes package over libmmreg.so, with its tests
 ```
 
 Dependencies: `libc` (`mmap`, `sysconf`, `flock`, `poll`, `read`, `write`) is the only dependency.
-All `unsafe` code is isolated in `mmio.rs`. The library never writes to `stderr`; non-fatal
-pre-flight warnings are collected in `Target.warnings` and exposed via `Device::warnings()` and
-`Interface::warnings()`.
+All OS/MMIO `unsafe` code is isolated in `mmio.rs`, and C pointer handling is isolated in
+`bindings/c/src/lib.rs` (where `unwrap_used`, `expect_used`, `indexing_slicing`, and `panic` are denied and every
+entry point is wrapped in `catch_unwind`). The library never writes to `stderr`; non-fatal
+pre-flight warnings are collected in `Target.warnings` and exposed via `Device::warnings()`,
+`Interface::warnings()`, and `mmreg_warning()`.
 
 ---
 

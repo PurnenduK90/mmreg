@@ -18,7 +18,7 @@ cd mmreg
 cargo install --path .
 ```
 
-### Features: Debug, Release and Minimal Builds
+### Features: Debug, Release, C ABI, and Minimal Builds
 
 | Feature | Default | Adds |
 | :--- | :--- | :--- |
@@ -26,10 +26,20 @@ cargo install --path .
 | `debug` | off | `/dev/mem` access for addresses no UIO region covers (`devmem` replacement) |
 
 ```sh
-cargo install mmreg --features debug         # bring-up / debug images: any address
-cargo install mmreg                          # release images: UIO devices only
-cargo install mmreg --no-default-features    # smallest: UIO only, no --validate
+cargo install mmreg --features debug                        # bring-up / debug images: any address
+cargo install mmreg                                         # release images: UIO devices only
+cargo install mmreg --no-default-features                   # smallest CLI: UIO only, no --validate
 ```
+
+The C library (`libmmreg.a`, `libmmreg.so`, used by C programs and the Python binding) is the
+`mmreg-capi` crate in `bindings/c`, built from a checkout of the repository:
+
+```sh
+cargo build --release -p mmreg-capi                  # UIO only, no JSON parser
+cargo build --release -p mmreg-capi --features debug # also /dev/mem, for bring-up images
+```
+
+Its header is `bindings/c/include/mmreg.h` and its pkg-config file `bindings/c/mmreg.pc`.
 
 The prebuilt binaries (`just build-targets`) are built with `debug`.
 
@@ -41,7 +51,7 @@ Add `mmreg` to your project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-mmreg = "1.1"
+mmreg = "1.2"
 ```
 
 Or using `cargo add`:
@@ -72,31 +82,64 @@ without a matching toolchain, copy the musl binary (e.g.
 
 ---
 
-## Including `mmreg` in a Yocto Project / PetaLinux Build
+## Including `mmreg` in a Yocto Project / PetaLinux or Buildroot Build
 
-You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) root filesystem using either a **source-built Cargo recipe** (Rust $\ge 1.75$: Yocto 5.0 "scarthgap" or newer) or a **pre-built binary recipe** (compatible with any Yocto release).
+You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) or Buildroot root filesystem using either a **source-built Cargo recipe** (Rust $\ge 1.75$: Yocto 5.0 "scarthgap" or newer) or a **pre-built binary recipe** (compatible with any Yocto release).
 
-### Option A: Building from Source with `inherit cargo` (`mmreg_1.1.1.bb`)
+### Recommended Image Split (Release vs. Development Images)
 
-Create `meta-custom/recipes-devtools/mmreg/mmreg_1.1.1.bb`:
+| Artifact | Feature Flags | Target Images |
+| :--- | :--- | :--- |
+| `libmmreg.a`, `libmmreg.so`, `mmreg.h`, `mmreg.pc` | `-p mmreg-capi` | Every image with C or Python applications (UIO only, zero parser overhead) |
+| `mmreg` CLI (release) | default or `--no-default-features` | Production images (UIO devices only; arbitrary `/dev/mem` disabled) |
+| `mmreg` CLI (bring-up) | `--features debug` | Development / bring-up images (`devmem` replacement) |
+| Python `mmreg` (`bindings/python/mmreg`) | pure-Python (`ctypes` over `libmmreg.so`) | Development images or Python-enabled application images |
+
+### Option A: Building CLI, C Library, and Python Module from Source (`mmreg_1.2.0.bb`)
+
+Create `meta-custom/recipes-devtools/mmreg/mmreg_1.2.0.bb`:
 
 ```bitbake
-SUMMARY = "Safe, concurrent 8/16/32/64-bit memory-mapped IO register access CLI and library"
+SUMMARY = "Safe, concurrent 8/16/32/64-bit memory-mapped IO register access (Rust, C, Python, and CLI)"
 HOMEPAGE = "https://github.com/PurnenduK90/mmreg"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://LICENSE.txt;md5=3914388ed65427d749c0c5886d2d12cf"
 
 SRC_URI = "git://github.com/PurnenduK90/mmreg.git;protocol=https;branch=main"
-SRCREV = "${AUTOREV}"
+# Pin the commit of the v1.2.0 tag: `${AUTOREV}` would drift away from the pinned `mmreg-crates.inc`.
+SRCREV = "<commit-sha-of-v1.2.0>"
 S = "${WORKDIR}/git"
 
-inherit cargo cargo-update-recipe-crates
+inherit cargo cargo-update-recipe-crates python3-dir
 require ${BPN}-crates.inc
 
-# Development images: /dev/mem access for any address (devmem replacement)
-# CARGO_BUILD_FLAGS:append = " --features debug"
-# Release images, smallest binary: UIO only, no JSON profile files (--validate)
-# CARGO_BUILD_FLAGS:append = " --no-default-features"
+# Build the CLI and the C library (`mmreg-capi` in bindings/c: `libmmreg.a`, `libmmreg.so`).
+# For development/bring-up images that also allow /dev/mem access:
+#   CARGO_BUILD_FLAGS:append = " --workspace --features debug"
+CARGO_BUILD_FLAGS:append = " --workspace"
+
+do_install:append() {
+    # Install C header, static/shared libraries, and pkg-config file into sysroot
+    install -d ${D}${includedir}
+    install -m 0644 ${S}/bindings/c/include/mmreg.h ${D}${includedir}/mmreg.h
+
+    install -d ${D}${libdir}/pkgconfig
+    install -m 0644 ${B}/target/${CARGO_TARGET_SUBDIR}/libmmreg.a ${D}${libdir}/libmmreg.a
+    # libmmreg.so carries the SONAME `libmmreg.so.1` (set by bindings/c/build.rs): ship the versioned file in
+    # ${PN} and keep the unversioned development symlink in ${PN}-dev.
+    install -m 0755 ${B}/target/${CARGO_TARGET_SUBDIR}/libmmreg.so ${D}${libdir}/libmmreg.so.${PV}
+    ln -sf libmmreg.so.${PV} ${D}${libdir}/libmmreg.so.1
+    ln -sf libmmreg.so.1 ${D}${libdir}/libmmreg.so
+    install -m 0644 ${S}/bindings/c/mmreg.pc ${D}${libdir}/pkgconfig/mmreg.pc
+
+    # Install pure-Python ctypes package (no C extension compilation needed)
+    install -d ${D}${PYTHON_SITEPACKAGES_DIR}/mmreg
+    install -m 0644 ${S}/bindings/python/mmreg/__init__.py ${D}${PYTHON_SITEPACKAGES_DIR}/mmreg/__init__.py
+}
+
+PACKAGES =+ "${PN}-python"
+FILES:${PN}-python = "${PYTHON_SITEPACKAGES_DIR}/mmreg"
+RDEPENDS:${PN}-python = "${PN} python3-core"
 ```
 
 > [!TIP]
@@ -104,7 +147,7 @@ require ${BPN}-crates.inc
 > ```sh
 > bitbake -c update_recipe_crates mmreg
 > ```
-> Or generate the recipe directly from your development host with [`cargo-bitbake`](https://github.com/meta-rust/cargo-bitbake) (`cargo bitbake`).
+> In **Buildroot**, use `$(eval $(cargo-package))` with `MMREG_CARGO_BUILD_OPTS = --workspace` and install `libmmreg.a`, `bindings/c/include/mmreg.h`, and `bindings/c/mmreg.pc` into `$(STAGING_DIR)/usr`, and `libmmreg.so` as `libmmreg.so.1.2.0` with `libmmreg.so.1` and `libmmreg.so` symlinks into both `$(STAGING_DIR)/usr/lib` and `$(TARGET_DIR)/usr/lib` (the library's SONAME is `libmmreg.so.1`).
 
 ### Option B: Pre-Built Binary Recipe (For Older Yocto / PetaLinux Toolchains)
 

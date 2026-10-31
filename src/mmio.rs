@@ -1,9 +1,10 @@
-//! The only module with `unsafe`: OS calls (page size, `mmap(2)` of a device file, `flock(2)`)
-//! and volatile 8/16/32/64-bit access.
+//! The only module with `unsafe`: OS calls (page size, `mmap(2)` of a device file, `flock(2)`,
+//! UIO interrupt `poll(2)`/`read(2)`/`write(2)`) and volatile 8/16/32/64-bit access.
 
 use crate::memregs::Width;
 use std::fs::{File, OpenOptions};
 use std::io;
+use std::time::Duration;
 
 /// Returns the system page size in bytes.
 #[cfg(unix)]
@@ -20,11 +21,11 @@ pub(crate) fn page_size() -> u64 {
     4096
 }
 
-/// Opens a device file for reading and writing; `sync` adds `O_SYNC`, which makes `/dev/mem`
-/// map the range uncached even where it is backed by RAM.
-pub(crate) fn open_device(path: &str, sync: bool) -> io::Result<File> {
+/// Opens a device file; `read_only` opens with `O_RDONLY`, otherwise `O_RDWR`, and `sync` adds
+/// `O_SYNC` so `/dev/mem` maps the range uncached even where it is backed by RAM.
+pub(crate) fn open_device(path: &str, sync: bool, read_only: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    options.read(true).write(true);
+    options.read(true).write(!read_only);
     #[cfg(unix)]
     if sync {
         use std::os::unix::fs::OpenOptionsExt;
@@ -68,6 +69,92 @@ pub(crate) fn lock_exclusive(_: &File) -> io::Result<()> {
 #[cfg(not(unix))]
 pub(crate) fn unlock(_: &File) {}
 
+/// Writes `1u32` (native-endian, 4 bytes) to a `/dev/uioN` descriptor to unmask its interrupt.
+#[cfg(unix)]
+pub(crate) fn irq_unmask(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let bytes = 1u32.to_ne_bytes();
+    let fd = file.as_raw_fd();
+    loop {
+        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if written == 4 {
+            return Ok(());
+        }
+        if written < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        return Err(io::Error::from(io::ErrorKind::WriteZero));
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn irq_unmask(_: &File) -> io::Result<()> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+/// Waits up to `timeout` for a `/dev/uioN` interrupt with `poll(POLLIN)` and reads the 4-byte
+/// kernel interrupt counter, returning `Ok(None)` on timeout.
+#[cfg(unix)]
+pub(crate) fn irq_wait(file: &File, timeout: Duration) -> io::Result<Option<u32>> {
+    use std::os::unix::io::AsRawFd;
+    use std::time::Instant;
+
+    let fd = file.as_raw_fd();
+    let deadline = Instant::now().checked_add(timeout);
+    loop {
+        let remaining_ms = match deadline {
+            Some(end) => {
+                let rem = end.saturating_duration_since(Instant::now());
+                i32::try_from(rem.as_millis()).unwrap_or(i32::MAX)
+            }
+            None => i32::MAX,
+        };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut pfd, 1, remaining_ms) };
+        if ready == 0 {
+            return Ok(None);
+        }
+        if ready < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if pfd.revents & libc::POLLIN == 0 {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        }
+        let mut buf = [0u8; 4];
+        loop {
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if n == 4 {
+                return Ok(Some(u32::from_ne_bytes(buf)));
+            }
+            if n < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err);
+            }
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn irq_wait(_: &File, _: Duration) -> io::Result<Option<u32>> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
 // 32-bit glibc and Android have a 32-bit `off_t`: physical addresses at or above 2 GiB need `mmap64`.
 #[cfg(all(
     unix,
@@ -77,7 +164,7 @@ use libc::{mmap, off_t};
 #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "android"))]
 use libc::{mmap64 as mmap, off64_t as off_t};
 
-/// A shared read/write mapping of a device file, unmapped on drop.
+/// A shared mapping of a device file, unmapped on drop.
 pub(crate) struct Mapping {
     ptr: *mut u8,
     len: usize,
@@ -85,8 +172,9 @@ pub(crate) struct Mapping {
     data_offset: usize,
 }
 
-// Safety: a `Mapping` is the sole owner of its pages; callers serialize access through `Interface`.
+// Safety: a `Mapping` is the sole owner of its pages; callers serialize access through `Device`.
 unsafe impl Send for Mapping {}
+unsafe impl Sync for Mapping {}
 
 impl Mapping {
     /// Maps `data_offset + size` bytes of `file` from `file_offset` (a multiple of the page size).
@@ -96,6 +184,7 @@ impl Mapping {
         file_offset: u64,
         data_offset: usize,
         size: usize,
+        read_only: bool,
     ) -> io::Result<Self> {
         use std::os::unix::io::AsRawFd;
         let invalid = || io::Error::from(io::ErrorKind::InvalidInput);
@@ -104,11 +193,16 @@ impl Mapping {
         }
         let len = data_offset.checked_add(size).ok_or_else(invalid)?;
         let offset = off_t::try_from(file_offset).map_err(|_| invalid())?;
+        let prot = if read_only {
+            libc::PROT_READ
+        } else {
+            libc::PROT_READ | libc::PROT_WRITE
+        };
         let ptr = unsafe {
             mmap(
                 std::ptr::null_mut(),
                 len,
-                libc::PROT_READ | libc::PROT_WRITE,
+                prot,
                 libc::MAP_SHARED,
                 file.as_raw_fd(),
                 offset,
@@ -125,7 +219,7 @@ impl Mapping {
     }
 
     #[cfg(not(unix))]
-    pub(crate) fn new(_: &File, _: u64, _: usize, _: usize) -> io::Result<Self> {
+    pub(crate) fn new(_: &File, _: u64, _: usize, _: usize, _: bool) -> io::Result<Self> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 
@@ -180,6 +274,14 @@ impl Drop for Mapping {
     }
 }
 
+#[cfg(all(test, unix))]
+pub(crate) fn test_pipe() -> (File, File) {
+    use std::os::unix::io::FromRawFd;
+    let mut fds = [0i32; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +310,69 @@ mod tests {
 
     #[test]
     fn test_open_device_missing_path_fails() {
-        assert!(open_device("/dev/nonexistent_mmreg_device", true).is_err());
+        assert!(open_device("/dev/nonexistent_mmreg_device", true, false).is_err());
+        assert!(open_device("/dev/nonexistent_mmreg_device", false, true).is_err());
+    }
+
+    /// A read-only open (`O_RDONLY` + `PROT_READ`) works on a file with read permission only,
+    /// and the read-only descriptor still takes the `flock` of the lock protocol.
+    #[cfg(unix)]
+    #[test]
+    fn test_read_only_open_maps_a_read_permission_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = crate::test_dir("read_only_open");
+        let path = dir.join("uio0");
+        let page = page_size() as usize;
+        let mut content = vec![0u8; page];
+        content[4..8].copy_from_slice(&0xCAFE_F00Du32.to_ne_bytes());
+        std::fs::write(&path, &content).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let p = path.to_str().unwrap();
+
+        let file = open_device(p, false, true).unwrap();
+        let mapping = Mapping::new(&file, 0, 0, page, true).unwrap();
+        assert_eq!(mapping.read(4, Width::U32), 0xCAFE_F00D);
+        // A writable mapping needs a writable descriptor: the read-only flag is what makes the
+        // open work with read permission alone (also as root, who ignores the 0444 mode).
+        assert!(Mapping::new(&file, 0, 0, page, false).is_err());
+        lock_exclusive(&file).unwrap();
+        unlock(&file);
+
+        drop(mapping);
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_irq_unmask_and_wait_on_pipe() {
+        use std::io::Read;
+        use std::os::unix::io::FromRawFd;
+
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let mut reader = unsafe { File::from_raw_fd(fds[0]) };
+        let writer = unsafe { File::from_raw_fd(fds[1]) };
+
+        // Empty pipe times out cleanly.
+        assert_eq!(irq_wait(&reader, Duration::from_millis(10)).unwrap(), None);
+
+        // irq_unmask writes 1u32 in native byte order.
+        irq_unmask(&writer).unwrap();
+        let mut raw = [0u8; 4];
+        reader.read_exact(&mut raw).unwrap();
+        assert_eq!(u32::from_ne_bytes(raw), 1);
+
+        // Writing a 4-byte count wakes irq_wait with that count.
+        let count_bytes = 42u32.to_ne_bytes();
+        assert_eq!(
+            unsafe { libc::write(fds[1], count_bytes.as_ptr().cast(), 4) },
+            4
+        );
+        assert_eq!(
+            irq_wait(&reader, Duration::from_millis(100)).unwrap(),
+            Some(42)
+        );
     }
 }

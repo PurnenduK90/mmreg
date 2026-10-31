@@ -1,46 +1,71 @@
 # 3. CLI Usage
 
-The `mmreg` command reads and writes one 32-bit register, after the blueprint and hardware
-pre-flight checks described in [Safety & Hardware Pre-Flight](05-safety-and-preflight.md).
+The `mmreg` command reads and writes one 8-, 16-, 32-, or 64-bit register by physical address or by
+UIO device name and byte offset, after the blueprint and hardware pre-flight checks described in
+[Safety & Hardware Pre-Flight](05-safety-and-preflight.md).
 
 ---
 
 ## Synopsis
 
 ```text
-Usage: mmreg [options] <read|write> <address> [value]
+Usage:
+  mmreg [options] <read|write> <address> [value]
+  mmreg [options] <read|write> <uio-name> <offset> [value]
 Options:
+  -w, --width <8|16|32|64>  Access width in bits (default: 32)
   -f, --force               Skip address blueprint and hardware pre-flight validation
   -v, --validate <file>     Run a JSON Safety Profile's checks before the access (may be repeated)
   -d, --dec                 Interpret unprefixed numbers as decimal instead of hexadecimal
+  -V, --version             Print version and enabled features
   -h, --help                Print this help message
 Commands:
-  read  <address>           Read 32-bit value at address
-  write <address> <value>   Write 32-bit value to address
+  read  <address>                   Read value at physical address
+  read  <uio-name> <offset>         Read value at byte offset in UIO device
+  write <address> <value>           Write value to physical address
+  write <uio-name> <offset> <value> Write value to byte offset in UIO device
 ```
 
-Options come before the command. Extra arguments are an error (`[E_CLI_EXTRA_ARGS]`), so a
-mistyped `read` with a value is never silently ignored.
+Extra arguments are an error (`[E_CLI_EXTRA_ARGS]`), so a mistyped `read` with a value is never
+silently ignored.
 
 ---
 
-## Numbers
+## Numbers & Widths
 
 - Unprefixed numbers are **hexadecimal** (`40000000`), or decimal with `-d` / `--dec`.
 - `0x` forces hexadecimal and `0d` forces decimal, whatever the default (`0d100` is 100).
 - Underscores may separate digits (`0x4000_0000`). Signs and repeated prefixes (`0x0x10`) are
   rejected.
-- The address must be 4-byte aligned (`[E_UNALIGNED_ACCESS]`).
-- Reads print zero-padded hexadecimal (`0x000000A1`).
+- `-w` / `--width` selects `8`, `16`, `32` (default), or `64` bits. The target address or offset
+  must be naturally aligned to the chosen width (`[E_UNALIGNED_ACCESS]`).
+- Reads print zero-padded hexadecimal matching the width (`0xA1`, `0x00A1`, `0x000000A1`, or
+  `0x00000000000000A1`).
+- `mmreg read` opens UIO and `/dev/mem` descriptors read-only (`O_RDONLY` + `PROT_READ`), so
+  non-root users only need read permission (`0440`/`0640`) on `/dev/uioN` to read registers.
 
-The exit status is 0 on success and 1 on any error; errors go to stderr with an `[E_*]` code (see
-[Troubleshooting](06-troubleshooting.md)).
+The exit status is 0 on success and 1 on any error; errors (and any non-fatal pre-flight warnings)
+go to stderr with an `[E_*]` code (see [Troubleshooting](06-troubleshooting.md)).
 
 ---
 
 ## Examples
 
-### Read and Write
+### Read and Write by UIO Name and Offset
+```sh
+$ mmreg read axi_gpio 0x04
+0x000000A1
+$ mmreg --width 16 read axi_gpio 0x02
+0x00A1
+$ mmreg write axi_gpio 0x00 0x0000_0001
+Wrote 0x00000001 to axi_gpio+0x0
+```
+
+Accessing a UIO device by name (`<uio-name> <offset>`) looks up `/sys/class/uio/uio*/name`, maps
+region `map0`, and works in **all** builds (without the `debug` feature and without `sudo` when your
+user has permission on `/dev/uioN`).
+
+### Read and Write by Physical Address
 ```sh
 $ sudo mmreg read 0x4000_0000
 0x000000A1

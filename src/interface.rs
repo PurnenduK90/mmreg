@@ -1,12 +1,14 @@
+//! Named-register [`Interface`] layered on top of [`Device`].
+
+use crate::device::Device;
 use crate::error::MmregError;
-use crate::lock::{lock, DeviceLock};
-use crate::memcheck::{resolve, RuntimePmGuard};
-use crate::memregs::{MapperType, MemoryMapper, OsMapper};
+use crate::memregs::{MapperType, MemoryMapper};
 use crate::register::Register;
 use crate::validation::SafetyProfile;
 
-/// A peripheral register bank: validated mapping, bounds/alignment enforcement and an
-/// inter-process lock around every access (see the lock protocol in the developer docs).
+/// A peripheral register bank: named registers and subregisters (bitfields) layered over a
+/// [`Device`] window with bounds/alignment enforcement and an inter-process lock around every
+/// access.
 pub struct Interface {
     name: String,
     base_address: u64,
@@ -15,10 +17,9 @@ pub struct Interface {
     force_map: bool,
     mapper_type: MapperType,
     safety_profile: Option<SafetyProfile>,
-    mapper: Option<Box<dyn MemoryMapper>>,
-    custom_mapper: bool,
-    device_lock: Option<DeviceLock>,
-    pm_guard: Option<RuntimePmGuard>,
+    custom_mapper: Option<Box<dyn MemoryMapper>>,
+    device: Option<Device>,
+    warnings: Vec<String>,
 }
 
 impl Interface {
@@ -41,10 +42,9 @@ impl Interface {
             force_map: false,
             mapper_type: MapperType::Auto,
             safety_profile: None,
-            mapper: None,
-            custom_mapper: false,
-            device_lock: None,
-            pm_guard: None,
+            custom_mapper: None,
+            device: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -90,6 +90,18 @@ impl Interface {
         self.safety_profile.as_ref()
     }
 
+    /// Non-fatal diagnostic warnings collected during the most recent [`Interface::map`].
+    #[inline]
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Returns the underlying mapped [`Device`] while mapped.
+    #[inline]
+    pub fn device(&self) -> Option<&Device> {
+        self.device.as_ref()
+    }
+
     /// Bypasses blueprint and hardware pre-flight validation (`--force`). Alignment, bounds and an
     /// attached `SafetyProfile` are still enforced.
     #[inline]
@@ -115,15 +127,14 @@ impl Interface {
     /// Uses `mapper` instead of `/dev/mem` / UIO (for tests or custom drivers).
     #[inline]
     pub fn with_custom_mapper(mut self, mapper: Box<dyn MemoryMapper>) -> Self {
-        self.mapper = Some(mapper);
-        self.custom_mapper = true;
+        self.custom_mapper = Some(mapper);
         self
     }
 
     /// Returns true while the register window is mapped.
     #[inline]
     pub fn is_mapped(&self) -> bool {
-        self.mapper.as_ref().is_some_and(|m| m.is_mapped())
+        self.device.is_some()
     }
 
     /// Checks that the base is 4-byte aligned, the window is non-empty without overflowing `u64`,
@@ -179,54 +190,27 @@ impl Interface {
             profile.execute_with(|addr| crate::read_register_at(addr, true))?;
         }
 
-        let target = resolve(
-            self.base_address,
-            self.size,
-            &self.mapper_type,
-            !self.force_map,
-        )?;
-        // UIO keeps the device runtime-active while open and is locked through its device file;
-        // /dev/mem (debug builds) needs the runtime PM guard and page lock files.
-        let pm_guard = match (&target.mapper, self.custom_mapper) {
-            (MapperType::DevMem, false) if cfg!(feature = "debug") => {
-                target.owner.as_deref().and_then(RuntimePmGuard::acquire)
-            }
-            _ => None,
-        };
-        let uio_lock_path = match (&target.mapper, self.custom_mapper) {
-            (MapperType::Uio { device_path, .. }, false) => Some(device_path.clone()),
-            _ => None,
-        };
-
-        if !self.custom_mapper {
-            self.mapper = None;
+        let mut builder = Device::addr(self.base_address, self.size)
+            .with_name(&self.name)
+            .with_force(self.force_map)
+            .with_mapper_type(self.mapper_type.clone());
+        if let Some(custom) = self.custom_mapper.take() {
+            builder = builder.with_custom_mapper(custom);
         }
-        self.mapper
-            .get_or_insert_with(|| Box::new(OsMapper::new(target.mapper)))
-            .map(self.base_address, self.size)?;
-        self.device_lock = match uio_lock_path {
-            Some(path) => match DeviceLock::open(&path) {
-                Ok(lock) => Some(lock),
-                Err(err) => {
-                    if let Some(m) = &mut self.mapper {
-                        m.unmap();
-                    }
-                    return Err(err);
-                }
-            },
-            None => None,
-        };
-        self.pm_guard = pm_guard;
+
+        let dev = builder.open()?;
+        self.warnings = dev.warnings().to_vec();
+        self.device = Some(dev);
         Ok(())
     }
 
     /// Unmaps the register window, then restores the device's runtime PM setting.
     pub fn unmap(&mut self) {
-        if let Some(mapper) = &mut self.mapper {
-            mapper.unmap();
+        if let Some(mut dev) = self.device.take() {
+            if let Some(custom) = dev.take_custom_mapper() {
+                self.custom_mapper = Some(custom);
+            }
         }
-        self.device_lock = None;
-        self.pm_guard = None;
     }
 
     fn register_index(&self, name: &str) -> Result<usize, MmregError> {
@@ -263,21 +247,18 @@ impl Interface {
         }
     }
 
-    /// Runs `op` on register `idx` under its lock, mapping and unmapping around it when the window
-    /// is not already mapped.
+    /// Runs `op` on register `idx` through the underlying [`Device`], mapping and unmapping around
+    /// it when the window is not already mapped.
     fn access<T>(
         &mut self,
         idx: usize,
-        op: impl FnOnce(&mut Register, &dyn MemoryMapper) -> T,
+        op: impl FnOnce(&mut Register, &Device) -> Result<T, MmregError>,
     ) -> Result<T, MmregError> {
         let transient = !self.is_mapped();
         self.map()?;
+        let dev = self.device.as_ref().expect("map() installs a Device");
         let reg = &mut self.registers[idx];
-        let address = self.base_address + u64::from(reg.offset);
-        let result = lock(self.device_lock.as_ref(), address).map(|_guard| {
-            let mapper = self.mapper.as_deref().expect("map() installs a mapper");
-            op(reg, mapper)
-        });
+        let result = op(reg, dev);
         if transient {
             self.unmap();
         }
@@ -287,19 +268,19 @@ impl Interface {
     /// Reads a register.
     pub fn read_register(&mut self, name: &str) -> Result<u32, MmregError> {
         let idx = self.register_index(name)?;
-        self.access(idx, |reg, m| reg.read(m))
+        self.access(idx, |reg, dev| reg.read(dev))
     }
 
     /// Writes a register.
     pub fn write_register(&mut self, name: &str, value: u32) -> Result<(), MmregError> {
         let idx = self.register_index(name)?;
-        self.access(idx, |reg, m| reg.write(m, value))
+        self.access(idx, |reg, dev| reg.write(dev, value))
     }
 
     /// Reads a subregister (bitfield) from hardware.
     pub fn read_subregister(&mut self, reg_name: &str, sub_name: &str) -> Result<u32, MmregError> {
         let (idx, mask, lsb) = self.field(reg_name, sub_name)?;
-        self.access(idx, |reg, m| (reg.read(m) & mask) >> lsb)
+        self.access(idx, |reg, dev| Ok((reg.read(dev)? & mask) >> lsb))
     }
 
     /// Writes a subregister (bitfield) by read-modify-write under one lock. Bits of `value`
@@ -311,9 +292,10 @@ impl Interface {
         value: u32,
     ) -> Result<(), MmregError> {
         let (idx, mask, lsb) = self.field(reg_name, sub_name)?;
-        self.access(idx, |reg, m| {
-            let merged = (reg.read(m) & !mask) | ((value << lsb) & mask);
-            reg.write(m, merged)
+        self.access(idx, |reg, dev| {
+            let updated = dev.update_u32(reg.offset, mask, value << lsb)?;
+            reg.raw = updated;
+            Ok(())
         })
     }
 
@@ -335,20 +317,17 @@ mod tests {
     use super::*;
     use crate::memregs::Width;
     use crate::register::SubRegister;
-    use std::cell::UnsafeCell;
+    use std::sync::Mutex;
 
     struct MockMapper {
-        storage: Box<[UnsafeCell<u32>]>,
+        storage: Mutex<Vec<u32>>,
         mapped: bool,
     }
-
-    // Safety: tests use each mock from one thread.
-    unsafe impl Send for MockMapper {}
 
     impl MockMapper {
         fn boxed(size: usize) -> Box<Self> {
             Box::new(Self {
-                storage: (0..size / 4).map(|_| UnsafeCell::new(0)).collect(),
+                storage: Mutex::new(vec![0; size / 4]),
                 mapped: false,
             })
         }
@@ -367,11 +346,11 @@ mod tests {
         }
         fn read(&self, offset: u32, width: Width) -> u64 {
             assert_eq!(width, Width::U32);
-            u64::from(unsafe { *self.storage[offset as usize / 4].get() })
+            u64::from(self.storage.lock().unwrap()[offset as usize / 4])
         }
         fn write(&self, offset: u32, width: Width, value: u64) {
             assert_eq!(width, Width::U32);
-            unsafe { *self.storage[offset as usize / 4].get() = value as u32 }
+            self.storage.lock().unwrap()[offset as usize / 4] = value as u32;
         }
     }
 
@@ -403,6 +382,8 @@ mod tests {
         assert!(iface.force_map());
         assert_eq!(iface.mapper_type(), &MapperType::Auto);
         assert!(iface.safety_profile().is_none());
+        assert!(iface.warnings().is_empty());
+        assert!(iface.device().is_none());
 
         iface.write_register("ctrl", 0x0000_00A0).unwrap();
         assert!(!iface.is_mapped());
@@ -413,6 +394,7 @@ mod tests {
         iface.map().unwrap();
         iface.map().unwrap();
         assert!(iface.is_mapped());
+        assert!(iface.device().is_some());
         iface.write_subregister("ctrl", "enable", 0x3).unwrap();
         assert_eq!(iface.read_register("ctrl").unwrap(), 0x0000_00A1);
         assert_eq!(iface.parse_subregister("ctrl", "mode").unwrap(), 0xA);

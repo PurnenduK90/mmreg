@@ -1,5 +1,6 @@
-//! Blueprint validation (is the range a known device, not RAM?) and Zombie Hardware Pre-Flight
-//! (is the owning device enabled, powered, clocked and, on an FPGA, programmed?).
+//! Blueprint validation (is the range a known device, not RAM?), UIO device/region lookup, and
+//! Zombie Hardware Pre-Flight (is the owning device enabled, powered, clocked and, on an FPGA,
+//! programmed?).
 
 use crate::error::MmregError;
 use crate::memregs::MapperType;
@@ -8,12 +9,15 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-/// How to reach an address range and which sysfs device owns it.
+/// How to reach an address range, which sysfs device owns it, and any non-fatal pre-flight
+/// warnings collected during resolution.
 pub(crate) struct Target {
     /// `MapperType::Uio` when a UIO region covers the range, `MapperType::DevMem` otherwise.
     pub(crate) mapper: MapperType,
     /// Sysfs directory of the owning device, when one is found.
     pub(crate) owner: Option<PathBuf>,
+    /// Non-fatal diagnostic warnings collected during pre-flight checks.
+    pub(crate) warnings: Vec<String>,
 }
 
 /// Finds the UIO region or platform device owning `[target, target + size)`. With `check`, also
@@ -26,6 +30,7 @@ pub(crate) fn resolve(
 ) -> Result<Target, MmregError> {
     let fpga_mgr_root = Path::new("/sys/class/fpga_manager");
     let sysfs_uio = Path::new("/sys/class/uio");
+    let mut warnings = Vec::new();
 
     if let MapperType::Uio { device_path, .. } = mapper_type {
         let owner = Path::new(device_path)
@@ -34,18 +39,24 @@ pub(crate) fn resolve(
             .filter(|p| p.exists())
             .map(|uio_dir| uio_owner(&uio_dir));
         if let (true, Some((name, path))) = (check, &owner) {
-            preflight_check_device(name, path, fpga_mgr_root)?;
+            preflight_check_device(name, path, fpga_mgr_root, &mut warnings)?;
         }
         return Ok(Target {
             mapper: mapper_type.clone(),
             owner: owner.map(|(_, path)| path),
+            warnings,
         });
     }
 
     if *mapper_type == MapperType::Auto {
         if let Some(uio) = find_uio_region(sysfs_uio, Path::new("/dev"), target, size) {
             if check {
-                preflight_check_device(&uio.device_name, &uio.device_path, fpga_mgr_root)?;
+                preflight_check_device(
+                    &uio.device_name,
+                    &uio.device_path,
+                    fpga_mgr_root,
+                    &mut warnings,
+                )?;
             }
             return Ok(Target {
                 mapper: MapperType::Uio {
@@ -53,6 +64,7 @@ pub(crate) fn resolve(
                     region_index: uio.region_index,
                 },
                 owner: Some(uio.device_path),
+                warnings,
             });
         }
     }
@@ -61,7 +73,9 @@ pub(crate) fn resolve(
     if check {
         let in_iomem = check_iomem(target, size)?;
         match &owner {
-            Some((name, path)) => preflight_check_device(name, path, fpga_mgr_root)?,
+            Some((name, path)) => {
+                preflight_check_device(name, path, fpga_mgr_root, &mut warnings)?;
+            }
             None if !in_iomem => {
                 return Err(MmregError::BlueprintUnmapped {
                     address: target,
@@ -74,6 +88,7 @@ pub(crate) fn resolve(
     Ok(Target {
         mapper: MapperType::DevMem,
         owner: owner.map(|(_, path)| path),
+        warnings,
     })
 }
 
@@ -119,6 +134,112 @@ impl UioMap {
                 .checked_add(len as u64)
                 .is_some_and(|end| end <= self.size)
     }
+}
+
+/// Looks up a UIO device by its `/sys/class/uio/uio*/name` attribute (trimmed) and returns its
+/// `/dev/uioN` path.
+pub(crate) fn find_uio(name: &str) -> Result<String, MmregError> {
+    find_uio_by_name(Path::new("/sys/class/uio"), Path::new("/dev"), name)
+}
+
+pub(crate) fn find_uio_by_name(
+    sysfs_uio: &Path,
+    dev_root: &Path,
+    name: &str,
+) -> Result<String, MmregError> {
+    let target = name.trim();
+    let mut matches = Vec::new();
+    let mut available = Vec::new();
+
+    if !target.is_empty() {
+        if let Ok(entries) = fs::read_dir(sysfs_uio) {
+            for entry in entries.flatten() {
+                let uio_name = fs::read_to_string(entry.path().join("name"))
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                if let Some(found_name) = uio_name {
+                    if found_name == target {
+                        matches.push(
+                            dev_root
+                                .join(entry.file_name())
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
+                    }
+                    if !available.contains(&found_name) {
+                        available.push(found_name);
+                    }
+                }
+            }
+        }
+    }
+
+    matches.sort();
+    available.sort();
+
+    match matches.len() {
+        1 => Ok(matches.pop().unwrap()),
+        0 => Err(MmregError::UioNotFound {
+            name: name.to_string(),
+            available,
+        }),
+        _ => Err(MmregError::UioAmbiguous {
+            name: name.to_string(),
+            devices: matches,
+        }),
+    }
+}
+
+/// Reads the physical window `(addr, size)` of UIO region `map<region_index>` for `device_path`.
+pub(crate) fn read_uio_region(
+    device_path: &str,
+    region_index: usize,
+) -> Result<UioMap, MmregError> {
+    uio_region_window(Path::new("/sys/class/uio"), device_path, region_index)
+}
+
+pub(crate) fn uio_region_window(
+    sysfs_uio: &Path,
+    device_path: &str,
+    region_index: usize,
+) -> Result<UioMap, MmregError> {
+    let invalid = |details: &str| MmregError::UioAddressInvalid {
+        device_path: device_path.to_string(),
+        region_index,
+        address: 0,
+        details: details.to_string(),
+    };
+    let map_dir = Path::new(device_path)
+        .file_name()
+        .map(|dev| {
+            sysfs_uio
+                .join(dev)
+                .join("maps")
+                .join(format!("map{region_index}"))
+        })
+        .ok_or_else(|| invalid("device path has no file name"))?;
+    let mut region = UioMap::read(&map_dir)
+        .ok_or_else(|| invalid("cannot read the region's sysfs addr/size"))?;
+    // Newer `uio_pdrv_genirq` reports a page-aligned `addr`, the registers' position in that page
+    // as `offset`, and a `size` counted from `addr`: the registers start at `addr + offset`.
+    // Older kernels report the registers' own `addr` and a `size` counted from it, used as is.
+    let page = crate::mmio::page_size();
+    if region.addr & (page - 1) == 0 {
+        if let Some(offs) = fs::read_to_string(map_dir.join("offset"))
+            .ok()
+            .and_then(|s| parse_u64_radix(&s, 16).ok())
+        {
+            if offs > 0 && offs < region.size {
+                region.addr = region.addr.wrapping_add(offs);
+                region.size -= offs;
+            }
+        }
+    }
+    if region.size == 0 || usize::try_from(region.size).is_err() {
+        return Err(invalid("region size is zero or overflows usize"));
+    }
+    Ok(region)
 }
 
 /// A UIO region covering an address range.
@@ -364,6 +485,7 @@ fn preflight_check_device(
     dev_name: &str,
     dev_path: &Path,
     fpga_mgr_root: &Path,
+    warnings: &mut Vec<String>,
 ) -> Result<(), MmregError> {
     // 1. Device Tree status
     let status_path = dev_path.join("of_node/status");
@@ -415,7 +537,12 @@ fn preflight_check_device(
     }
 
     // 4. Common Clock Framework (debugfs)
-    check_device_clocks(dev_name, dev_path, Path::new("/sys/kernel/debug/clk"))?;
+    check_device_clocks(
+        dev_name,
+        dev_path,
+        Path::new("/sys/kernel/debug/clk"),
+        warnings,
+    )?;
 
     // 5. FPGA manager, only for devices on the FPGA fabric
     if is_fpga_backed_device(dev_path) {
@@ -426,11 +553,13 @@ fn preflight_check_device(
 }
 
 /// Checks the device's clocks in Common Clock Framework debugfs by their hardware-enable state
-/// (`clk_summary`), warning instead of refusing when only the software enable count is known.
+/// (`clk_summary`), recording a warning instead of refusing when only the software enable count is
+/// known.
 fn check_device_clocks(
     dev_name: &str,
     dev_path: &Path,
     clk_debug_root: &Path,
+    warnings: &mut Vec<String>,
 ) -> Result<(), MmregError> {
     if !clk_debug_root.exists() {
         return Ok(());
@@ -454,18 +583,19 @@ fn check_device_clocks(
             dev_name,
             &dt_clock_names,
             &summary_path,
+            warnings,
         );
     }
 
     for clk_name in &dt_clock_names {
         let count_path = clk_debug_root.join(clk_name).join("clk_enable_count");
         if fs::read_to_string(&count_path).is_ok_and(|raw| raw.trim() == "0") {
-            eprintln!(
+            warnings.push(format!(
                 "Warning: Clock '{}' for device '{}' has software clk_enable_count == 0 at '{}' (hardware-enable state unavailable).",
                 clk_name,
                 dev_name,
                 count_path.display()
-            );
+            ));
         }
     }
     Ok(())
@@ -490,6 +620,7 @@ fn evaluate_clock_state(
     clk_name: &str,
     (enable_count, hw_enable): (u32, Option<char>),
     summary_path: &Path,
+    warnings: &mut Vec<String>,
 ) -> Result<(), MmregError> {
     match hw_enable {
         Some('N') => Err(MmregError::ZombieClockGated {
@@ -500,12 +631,12 @@ fn evaluate_clock_state(
         Some('Y') => Ok(()),
         _ => {
             if enable_count == 0 {
-                eprintln!(
+                warnings.push(format!(
                     "Warning: Clock '{}' for device '{}' has enable_count == 0 in '{}' (hardware-enable column unavailable).",
                     clk_name,
                     dev_name,
                     summary_path.display()
-                );
+                ));
             }
             Ok(())
         }
@@ -519,6 +650,7 @@ fn check_clk_summary<R: BufRead>(
     dev_name: &str,
     dt_clock_names: &[String],
     summary_path: &Path,
+    warnings: &mut Vec<String>,
 ) -> Result<(), MmregError> {
     let mut clock = String::new();
     let mut state = None;
@@ -540,10 +672,10 @@ fn check_clk_summary<R: BufRead>(
             if dt_clock_names.iter().any(|c| c == tokens[0])
                 || tokens.get(3..).is_some_and(|t| t.contains(&dev_name))
             {
-                evaluate_clock_state(dev_name, &clock, row, summary_path)?;
+                evaluate_clock_state(dev_name, &clock, row, summary_path, warnings)?;
             }
         } else if let Some(row) = state.filter(|_| tokens.contains(&dev_name)) {
-            evaluate_clock_state(dev_name, &clock, row, summary_path)?;
+            evaluate_clock_state(dev_name, &clock, row, summary_path, warnings)?;
         }
         line.clear();
     }
@@ -581,9 +713,9 @@ pub(crate) struct RuntimePmGuard {
 }
 
 impl RuntimePmGuard {
-    /// Sets `<dev_path>/power/control` to `"on"` unless it already is; warns and returns `None`
-    /// when that is not permitted.
-    pub(crate) fn acquire(dev_path: &Path) -> Option<Self> {
+    /// Sets `<dev_path>/power/control` to `"on"` unless it already is; records a warning in
+    /// `warnings` and returns `None` when that is not permitted.
+    pub(crate) fn acquire(dev_path: &Path, warnings: &mut Vec<String>) -> Option<Self> {
         let control_path = dev_path.join("power/control");
         let previous = fs::read_to_string(&control_path).ok()?.trim().to_string();
         if previous.eq_ignore_ascii_case("on") {
@@ -595,11 +727,11 @@ impl RuntimePmGuard {
                 previous,
             }),
             Err(e) => {
-                eprintln!(
+                warnings.push(format!(
                     "Warning: Failed to set '{}' to 'on' ({}); device may autosuspend during /dev/mem access.",
                     control_path.display(),
                     e
-                );
+                ));
                 None
             }
         }
@@ -608,14 +740,7 @@ impl RuntimePmGuard {
 
 impl Drop for RuntimePmGuard {
     fn drop(&mut self) {
-        if let Err(e) = fs::write(&self.control_path, &self.previous) {
-            eprintln!(
-                "Warning: Failed to restore '{}' to '{}': {}",
-                self.control_path.display(),
-                self.previous,
-                e
-            );
-        }
+        let _ = fs::write(&self.control_path, &self.previous);
     }
 }
 
@@ -691,21 +816,27 @@ e0000000-e0000fff : xuartps
         fs::create_dir_all(fpga_root.join("fpga0")).unwrap();
         fs::write(fpga_root.join("fpga0/state"), "power off\n").unwrap();
 
+        let mut warnings = Vec::new();
         assert!(!is_fpga_backed_device(&ps_dev));
-        assert!(preflight_check_device("e0000000.serial", &ps_dev, &fpga_root).is_ok());
+        assert!(
+            preflight_check_device("e0000000.serial", &ps_dev, &fpga_root, &mut warnings).is_ok()
+        );
 
         let pl_dev = root.join("amba_pl@0").join("a0000000.axi_gpio");
         fs::create_dir_all(pl_dev.join("of_node")).unwrap();
         fs::write(pl_dev.join("of_node/status"), "okay\0").unwrap();
 
         assert!(is_fpga_backed_device(&pl_dev));
-        let err = preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root).unwrap_err();
+        let err = preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root, &mut warnings)
+            .unwrap_err();
         assert!(err
             .to_string()
             .contains("FPGA manager 'fpga0' is in state 'power off'"));
 
         fs::write(fpga_root.join("fpga0/state"), "operating\n").unwrap();
-        assert!(preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root).is_ok());
+        assert!(
+            preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root, &mut warnings).is_ok()
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -717,25 +848,28 @@ e0000000-e0000fff : xuartps
         let dev = root.join("soc").join("ff000000.i2c");
         fs::create_dir_all(dev.join("of_node")).unwrap();
         fs::create_dir_all(dev.join("power")).unwrap();
+        let mut warnings = Vec::new();
 
         fs::write(dev.join("of_node/status"), "disabled\0").unwrap();
-        let err = preflight_check_device("ff000000.i2c", &dev, &fpga_root).unwrap_err();
+        let err =
+            preflight_check_device("ff000000.i2c", &dev, &fpga_root, &mut warnings).unwrap_err();
         assert!(err.to_string().contains("Device Tree status 'disabled'"));
 
         fs::write(dev.join("of_node/status"), "okay\0").unwrap();
         for status in ["suspended", "suspending"] {
             fs::write(dev.join("power/runtime_status"), format!("{status}\n")).unwrap();
-            let err = preflight_check_device("ff000000.i2c", &dev, &fpga_root).unwrap_err();
+            let err = preflight_check_device("ff000000.i2c", &dev, &fpga_root, &mut warnings)
+                .unwrap_err();
             assert_eq!(err.code(), "E_ZOMBIE_RUNTIME_PM");
             assert!(err.to_string().contains(status));
         }
 
         fs::write(dev.join("power/runtime_status"), "active\n").unwrap();
-        assert!(preflight_check_device("ff000000.i2c", &dev, &fpga_root).is_ok());
+        assert!(preflight_check_device("ff000000.i2c", &dev, &fpga_root, &mut warnings).is_ok());
 
         fs::write(dev.join("power/control"), "auto\n").unwrap();
         {
-            let guard = RuntimePmGuard::acquire(&dev);
+            let guard = RuntimePmGuard::acquire(&dev, &mut warnings);
             assert!(guard.is_some());
             let cur = fs::read_to_string(dev.join("power/control")).unwrap();
             assert_eq!(cur.trim(), "on");
@@ -744,19 +878,21 @@ e0000000-e0000fff : xuartps
         assert_eq!(restored.trim(), "auto");
 
         fs::write(dev.join("power/control"), "on\n").unwrap();
-        assert!(RuntimePmGuard::acquire(&dev).is_none());
+        assert!(RuntimePmGuard::acquire(&dev, &mut warnings).is_none());
+        assert!(warnings.is_empty());
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn test_find_uio_region() {
+    fn test_find_uio_region_and_by_name() {
         let root = test_dir("uio_scan");
         let sysfs_uio = root.join("sys_uio");
         let dev_dir = root.join("dev");
         let map0 = sysfs_uio.join("uio0/maps/map0");
         fs::create_dir_all(&map0).unwrap();
         fs::create_dir_all(sysfs_uio.join("uio0/maps/junk")).unwrap();
+        fs::write(sysfs_uio.join("uio0/name"), "axi_gpio\n").unwrap();
         fs::write(map0.join("addr"), "0xa0000000\n").unwrap();
         fs::write(map0.join("size"), "0x00001000\n").unwrap();
 
@@ -767,6 +903,51 @@ e0000000-e0000fff : xuartps
         assert!(find_uio_region(&sysfs_uio, &dev_dir, 0xA000_0120, 0).is_none());
         assert!(find_uio_region(&sysfs_uio, &dev_dir, 0xA000_0FFC, 8).is_none());
         assert!(find_uio_region(&sysfs_uio, &dev_dir, 0xA000_1000, 4).is_none());
+
+        // Name lookup: found
+        let dev_path = find_uio_by_name(&sysfs_uio, &dev_dir, "axi_gpio").unwrap();
+        assert_eq!(Path::new(&dev_path), dev_dir.join("uio0"));
+
+        // Region window lookup
+        let win = uio_region_window(&sysfs_uio, &dev_path, 0).unwrap();
+        assert_eq!((win.addr, win.size), (0xA000_0000, 0x1000));
+
+        // Region window lookup with sub-page `offset` attribute (`uio_pdrv_genirq`)
+        fs::write(map0.join("offset"), "0x100\n").unwrap();
+        let win_off = uio_region_window(&sysfs_uio, &dev_path, 0).unwrap();
+        assert_eq!((win_off.addr, win_off.size), (0xA000_0100, 0xF00));
+        let _ = fs::remove_file(map0.join("offset"));
+
+        // Non-page-aligned `addr` (older kernels): `size` counts from `addr` and is kept whole,
+        // the same window `open_addr` sees, so the last registers stay reachable.
+        fs::write(map0.join("addr"), "0xa0000100\n").unwrap();
+        let win_unaligned = uio_region_window(&sysfs_uio, &dev_path, 0).unwrap();
+        assert_eq!(
+            (win_unaligned.addr, win_unaligned.size),
+            (0xA000_0100, 0x1000)
+        );
+        assert!(find_uio_region(&sysfs_uio, &dev_dir, 0xA000_10FC, 4).is_some());
+        fs::write(map0.join("addr"), "0xa0000000\n").unwrap();
+
+        assert_eq!(
+            uio_region_window(&sysfs_uio, &dev_path, 1)
+                .err()
+                .unwrap()
+                .code(),
+            "E_UIO_ADDRESS"
+        );
+
+        // Name lookup: not found lists available names
+        let err = find_uio_by_name(&sysfs_uio, &dev_dir, "missing_ip").unwrap_err();
+        assert_eq!(err.code(), "E_UIO_NOT_FOUND");
+        assert!(err.to_string().contains("axi_gpio"));
+
+        // Name lookup: ambiguous duplicate names
+        fs::create_dir_all(sysfs_uio.join("uio1")).unwrap();
+        fs::write(sysfs_uio.join("uio1/name"), "axi_gpio\n").unwrap();
+        let err = find_uio_by_name(&sysfs_uio, &dev_dir, "axi_gpio").unwrap_err();
+        assert_eq!(err.code(), "E_UIO_AMBIGUOUS");
+        assert!(err.to_string().contains("uio0") && err.to_string().contains("uio1"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -794,7 +975,10 @@ e0000000-e0000fff : xuartps
         fs::create_dir_all(&sup_dir).unwrap();
         fs::write(sup_dir.join("runtime_status"), "suspending\n").unwrap();
         let fpga_root = root.join("fpga_mgr");
-        let err = preflight_check_device("a0000000.custom_ip", &dev_path, &fpga_root).unwrap_err();
+        let mut warnings = Vec::new();
+        let err =
+            preflight_check_device("a0000000.custom_ip", &dev_path, &fpga_root, &mut warnings)
+                .unwrap_err();
         assert_eq!(err.code(), "E_ZOMBIE_SUPPLIER_PM");
         assert!(err.to_string().contains("supplier_platform_clk_ctrl"));
 
@@ -828,8 +1012,13 @@ e0000000-e0000fff : xuartps
         let clk_root = root.join("clk_debug");
         fs::create_dir_all(clk_root.join("pl0_ref")).unwrap();
 
+        let mut warnings = Vec::new();
         fs::write(clk_root.join("pl0_ref/clk_enable_count"), "0\n").unwrap();
-        assert!(check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root).is_ok());
+        assert!(
+            check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root, &mut warnings).is_ok()
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("clk_enable_count == 0"));
 
         let header = "\
                                  enable  prepare  protect                                duty  hardware                            connection
@@ -841,11 +1030,16 @@ e0000000-e0000fff : xuartps
                 "{header}   fclk0                              0        0        0   100000000          0     0  50000         {hw}   a0000000.axi_gpio                s_axi_aclk\n"
             )
         };
+        warnings.clear();
         fs::write(clk_root.join("clk_summary"), row("Y")).unwrap();
-        assert!(check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root).is_ok());
+        assert!(
+            check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root, &mut warnings).is_ok()
+        );
+        assert!(warnings.is_empty());
 
         fs::write(clk_root.join("clk_summary"), row("N")).unwrap();
-        let err = check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root).unwrap_err();
+        let err = check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root, &mut warnings)
+            .unwrap_err();
         assert_eq!(err.code(), "E_ZOMBIE_CLOCK_GATED");
         assert!(err.to_string().contains("fclk0"));
 
@@ -854,7 +1048,8 @@ e0000000-e0000fff : xuartps
             "{header}   fclk1                              1        1        0   100000000          0     0  50000         N   deviceless                       no_connection_id\n                                                                                                         a0000000.axi_gpio                s_axi_aclk\n"
         );
         fs::write(clk_root.join("clk_summary"), split).unwrap();
-        let err = check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root).unwrap_err();
+        let err = check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root, &mut warnings)
+            .unwrap_err();
         assert!(err.to_string().contains("fclk1"));
 
         let legacy = "\
@@ -862,8 +1057,13 @@ e0000000-e0000fff : xuartps
 ----------------------------------------------------------------------------------------
    pl0_ref                                0            0   100000000          0       0
 ";
+        warnings.clear();
         fs::write(clk_root.join("clk_summary"), legacy).unwrap();
-        assert!(check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root).is_ok());
+        assert!(
+            check_device_clocks("a0000000.axi_gpio", &dev_path, &clk_root, &mut warnings).is_ok()
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("enable_count == 0"));
 
         let _ = fs::remove_dir_all(&root);
     }

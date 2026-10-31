@@ -1,4 +1,5 @@
-use crate::memregs::{MemoryMapper, Width};
+use crate::device::Device;
+use crate::error::MmregError;
 
 /// A 32-bit memory-mapped register with optional subregisters (bitfields).
 ///
@@ -51,16 +52,17 @@ impl Register {
 
     /// Reads the register from hardware into `raw`.
     #[inline]
-    pub(crate) fn read(&mut self, mapper: &dyn MemoryMapper) -> u32 {
-        self.raw = mapper.read(self.offset, Width::U32) as u32;
-        self.raw
+    pub(crate) fn read(&mut self, device: &Device) -> Result<u32, MmregError> {
+        self.raw = device.read_u32(self.offset)?;
+        Ok(self.raw)
     }
 
     /// Writes `value` to hardware and records it in `raw`.
     #[inline]
-    pub(crate) fn write(&mut self, mapper: &dyn MemoryMapper, value: u32) {
-        mapper.write(self.offset, Width::U32, u64::from(value));
+    pub(crate) fn write(&mut self, device: &Device, value: u32) -> Result<(), MmregError> {
+        device.write_u32(self.offset, value)?;
         self.raw = value;
+        Ok(())
     }
 
     /// Returns the subregister called `name`.

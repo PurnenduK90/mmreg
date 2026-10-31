@@ -89,8 +89,15 @@ pub enum MmregError {
         address: u64,
         details: String,
     },
-    /// Base address or register offset is not 4-byte aligned.
+    /// Base address or register offset is not 4-byte aligned (32-bit register access).
     UnalignedAccess { address: u64, offset: u32 },
+    /// A `width_bits` access at `address + offset` is not aligned to its own size
+    /// ([`crate::Device`] and `--width` accesses). Same code as [`MmregError::UnalignedAccess`].
+    UnalignedWidthAccess {
+        address: u64,
+        offset: u32,
+        width_bits: u32,
+    },
     /// Register access exceeds the mapped `Interface` size window.
     OutOfBoundsAccess {
         register_name: String,
@@ -102,6 +109,13 @@ pub enum MmregError {
     LockOpen { lock_path: PathBuf, details: String },
     /// Failed to acquire exclusive lock on lock file.
     LockAcquire { details: String },
+    /// A sequence guard ([`crate::Device::lock`]) on a `/dev/mem` or custom-mapper window would
+    /// hold more page locks than [`crate::Device::MAX_SEQUENCE_PAGES`].
+    LockRangeTooLarge {
+        name: String,
+        pages: u64,
+        max_pages: u64,
+    },
     /// Requested register name was not found on the `Interface`.
     RegisterNotFound {
         interface_name: String,
@@ -124,6 +138,22 @@ pub enum MmregError {
     },
     /// The address is in no UIO region and this build has no `/dev/mem` access (`debug` feature).
     DebugDisabled { address: u64 },
+    /// No `/sys/class/uio/uio*/name` matches the requested UIO device name.
+    UioNotFound {
+        name: String,
+        available: Vec<String>,
+    },
+    /// More than one `/sys/class/uio/uio*` device has the requested `name`.
+    UioAmbiguous { name: String, devices: Vec<String> },
+    /// An operation (such as `irq_wait` or `irq_unmask`) requires a UIO-backed `Device`.
+    UioRequired { operation: String },
+    /// UIO interrupt control or wait failed on `/dev/uioN`.
+    UioIrq {
+        device_path: String,
+        details: String,
+    },
+    /// Attempted to write or unmask interrupts on a read-only `Device`.
+    ReadOnly { name: String },
 }
 
 impl MmregError {
@@ -144,14 +174,22 @@ impl MmregError {
             MmregError::UioOpen { .. } => "E_UIO_OPEN",
             MmregError::UioMmap { .. } => "E_UIO_MMAP",
             MmregError::UioAddressInvalid { .. } => "E_UIO_ADDRESS",
-            MmregError::UnalignedAccess { .. } => "E_UNALIGNED_ACCESS",
+            MmregError::UnalignedAccess { .. } | MmregError::UnalignedWidthAccess { .. } => {
+                "E_UNALIGNED_ACCESS"
+            }
             MmregError::OutOfBoundsAccess { .. } => "E_OUT_OF_BOUNDS",
             MmregError::LockOpen { .. } => "E_LOCK_OPEN",
             MmregError::LockAcquire { .. } => "E_LOCK_ACQUIRE",
+            MmregError::LockRangeTooLarge { .. } => "E_LOCK_RANGE",
             MmregError::RegisterNotFound { .. } => "E_REG_NOT_FOUND",
             MmregError::SubRegisterNotFound { .. } => "E_SUBREG_NOT_FOUND",
             MmregError::InvalidSubRegister { .. } => "E_SUBREG_RANGE",
             MmregError::DebugDisabled { .. } => "E_DEBUG_DISABLED",
+            MmregError::UioNotFound { .. } => "E_UIO_NOT_FOUND",
+            MmregError::UioAmbiguous { .. } => "E_UIO_AMBIGUOUS",
+            MmregError::UioRequired { .. } => "E_UIO_REQUIRED",
+            MmregError::UioIrq { .. } => "E_UIO_IRQ",
+            MmregError::ReadOnly { .. } => "E_READ_ONLY",
         }
     }
 }
@@ -341,6 +379,22 @@ impl fmt::Display for MmregError {
                 offset,
                 address.wrapping_add(*offset as u64)
             ),
+            MmregError::UnalignedWidthAccess {
+                address,
+                offset,
+                width_bits,
+            } => write!(
+                f,
+                "[{}] Unaligned {}-bit register access at base 0x{:X} + offset 0x{:X} (effective address 0x{:X}). \
+                 Remediation: A {}-bit access needs an effective address that is a multiple of {} bytes.",
+                code,
+                width_bits,
+                address,
+                offset,
+                address.wrapping_add(*offset as u64),
+                width_bits,
+                width_bits / 8
+            ),
             MmregError::OutOfBoundsAccess {
                 register_name,
                 offset,
@@ -370,6 +424,16 @@ impl fmt::Display for MmregError {
                 f,
                 "[{}] Failed to acquire exclusive inter-process lock: {}.",
                 code, details
+            ),
+            MmregError::LockRangeTooLarge {
+                name,
+                pages,
+                max_pages,
+            } => write!(
+                f,
+                "[{}] Sequence lock on '{}' would hold {} page locks (at most {}). \
+                 Remediation: Open a smaller Device window covering only the registers of the sequence.",
+                code, name, pages, max_pages
             ),
             MmregError::RegisterNotFound {
                 interface_name,
@@ -413,6 +477,43 @@ impl fmt::Display for MmregError {
                 "[{}] Address 0x{:X} is not inside any UIO region, and this mmreg build has no /dev/mem access. \
                  Remediation: Bind the peripheral to UIO (`compatible = \"generic-uio\"`), or use an mmreg built with the `debug` feature (development images only).",
                 code, address
+            ),
+            MmregError::UioNotFound { name, available } => write!(
+                f,
+                "[{}] UIO device '{}' not found in /sys/class/uio. Available UIO names: [{}]. \
+                 Remediation: Check the Device Tree `linux,uio-name` / node name and ensure `uio_pdrv_genirq.of_id=generic-uio` is set.",
+                code,
+                name,
+                available.join(", ")
+            ),
+            MmregError::UioAmbiguous { name, devices } => write!(
+                f,
+                "[{}] Multiple UIO devices have the name '{}': [{}]. \
+                 Remediation: Give each Device Tree node a unique `linux,uio-name`, or open by path (`Device::open_uio_path`).",
+                code,
+                name,
+                devices.join(", ")
+            ),
+            MmregError::UioRequired { operation } => write!(
+                f,
+                "[{}] Operation '{}' requires a UIO-backed device (/dev/uioN). \
+                 Remediation: Open the peripheral via `Device::open_uio` or `Device::open_uio_path`.",
+                code, operation
+            ),
+            MmregError::UioIrq {
+                device_path,
+                details,
+            } => write!(
+                f,
+                "[{}] UIO interrupt operation failed on '{}': {}. \
+                 Remediation: Verify the UIO device has an `interrupts` property in the Device Tree and its driver supports `irqcontrol` (`uio_pdrv_genirq`).",
+                code, device_path, details
+            ),
+            MmregError::ReadOnly { name } => write!(
+                f,
+                "[{}] Cannot write to read-only device '{}'. \
+                 Remediation: Open the device without `.read_only()` and ensure write permission on the device node.",
+                code, name
             ),
         }
     }
@@ -551,6 +652,14 @@ mod tests {
                 "E_UNALIGNED_ACCESS",
             ),
             (
+                MmregError::UnalignedWidthAccess {
+                    address: 0x4000_0000,
+                    offset: 4,
+                    width_bits: 64,
+                },
+                "E_UNALIGNED_ACCESS",
+            ),
+            (
                 MmregError::OutOfBoundsAccess {
                     register_name: "ctrl".into(),
                     offset: 16,
@@ -573,6 +682,14 @@ mod tests {
                     details: "Resource deadlock".into(),
                 },
                 "E_LOCK_ACQUIRE",
+            ),
+            (
+                MmregError::LockRangeTooLarge {
+                    name: "dma".into(),
+                    pages: 100,
+                    max_pages: 64,
+                },
+                "E_LOCK_RANGE",
             ),
             (
                 MmregError::RegisterNotFound {
@@ -606,11 +723,46 @@ mod tests {
                 },
                 "E_DEBUG_DISABLED",
             ),
+            (
+                MmregError::UioNotFound {
+                    name: "axi_gpio".into(),
+                    available: vec!["uart0".into()],
+                },
+                "E_UIO_NOT_FOUND",
+            ),
+            (
+                MmregError::UioAmbiguous {
+                    name: "axi_gpio".into(),
+                    devices: vec!["/dev/uio0".into(), "/dev/uio1".into()],
+                },
+                "E_UIO_AMBIGUOUS",
+            ),
+            (
+                MmregError::UioRequired {
+                    operation: "irq_wait".into(),
+                },
+                "E_UIO_REQUIRED",
+            ),
+            (
+                MmregError::UioIrq {
+                    device_path: "/dev/uio0".into(),
+                    details: "Input/output error".into(),
+                },
+                "E_UIO_IRQ",
+            ),
+            (
+                MmregError::ReadOnly {
+                    name: "axi_gpio".into(),
+                },
+                "E_READ_ONLY",
+            ),
         ];
 
         for (err, expected_code) in cases {
             assert_eq!(err.code(), expected_code);
-            assert!(err.to_string().starts_with(&format!("[{}]", expected_code)));
+            let formatted = err.to_string();
+            assert!(formatted.starts_with(&format!("[{}]", expected_code)));
+            assert!(!formatted.contains("  Remediation:"));
         }
     }
 

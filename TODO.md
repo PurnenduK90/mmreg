@@ -135,7 +135,7 @@ profile checks read registers by physical address too, so outside UIO regions th
 
 ## 1.1 — library core (replaces `devmem`, and UIO helper libraries for Rust)
 
-- [ ] **`Device`:** one register window, `&self` access, `Send + Sync`, owns the mapping and the
+- [x] **`Device`:** one register window, `&self` access, `Send + Sync`, owns the mapping and the
   open device file.
   - `Device::open_uio(name)` finds `/dev/uioN` from `/sys/class/uio/uio*/name`, region from
     `maps/mapN` (`.region(n)` to pick another); `open_uio_path("/dev/uio3")`;
@@ -148,28 +148,28 @@ profile checks read registers by physical address too, so outside UIO regions th
   - `.read_only()`: `O_RDONLY` + `PROT_READ`, so read-only tools work with read permission only.
   - `read_u8/u16/u32/u64(offset)`, `write_*`, `update_u32(offset, mask, value)` (locked RMW).
   - Blueprint, pre-flight and safety-profile checks run once at open.
-- [ ] **Lock protocol within a process:** one open `/dev/uioN` (or `/dev/mem` page lock file) per
+- [x] **Lock protocol within a process:** one open `/dev/uioN` (or `/dev/mem` page lock file) per
    `(st_dev, st_ino)` and process (registry) shared by its `Device` handles, a mutex for threads;
   the inter-process protocol is unchanged.
-- [ ] **Sequence guard:** `let _g = dev.lock()?;` holds the lock until dropped; reentrant.
-- [ ] **Interrupts (UIO):** `irq_unmask()`, `irq_wait(timeout) -> Option<count>` (`poll` + `read`).
+- [x] **Sequence guard:** `let _g = dev.lock()?;` holds the lock until dropped; reentrant.
+- [x] **Interrupts (UIO):** `irq_unmask()`, `irq_wait(timeout) -> Option<count>` (`poll` + `read`).
   Document "clear the source, then unmask" for level-triggered sources.
-- [ ] **`Interface` on `Device`:** today's named-register API kept as a layer over `Device`
+- [x] **`Interface` on `Device`:** today's named-register API kept as a layer over `Device`
   (constructors and accessors unchanged where possible); `write_subregister` keeps its
   read-modify-write semantics (access types are handled by generated code and the Python layer).
-- [ ] **Generated-code guide** (`docs/users/`): how generated C headers and Rust constants use
+- [x] **Generated-code guide** (`docs/users/`): how generated C headers and Rust constants use
   `Device` (offset, mask, shift; `update_u32` for read-modify-write), and which access-type rules
   a generator should apply in the field writers it emits (W1C / pulse fields written without
   read-modify-write), so production code is as safe as the Python debug layer.
-- [ ] **No stderr from the library.** Return the `memcheck.rs` warnings to the caller (a warnings
+- [x] **No stderr from the library.** Return the `memcheck.rs` warnings to the caller (a warnings
   list or callback on `Interface` / `Device`) and let the CLI print. Prerequisite for the bindings,
   which must not write to a host program's stderr.
-- [ ] **CLI:** `--width 8|16|32|64` on `read` / `write`; `read|write <uio name> <offset>` for UIO
+- [x] **CLI:** `--width 8|16|32|64` on `read` / `write`; `read|write <uio name> <offset>` for UIO
   devices (works without `debug`); `--version` showing the enabled features.
-- [ ] **Tests:** lock protocol (two processes, two threads, nested guard), read-only open, name
+- [x] **Tests:** lock protocol (two processes, two threads, nested guard), read-only open, name
   lookup (duplicates, missing), IRQ wait and unmask with a fake device; approach in
   [Roadmap Reference → Testing Without Hardware](docs/developers/05-roadmap-reference.md#testing-without-hardware).
-- [ ] **User docs:** setting up UIO (Device Tree `generic-uio`, `uio_pdrv_genirq.of_id`, udev
+- [x] **User docs:** setting up UIO (Device Tree `generic-uio`, `uio_pdrv_genirq.of_id`, udev
   permissions), from the Roadmap Reference.
 
 ## 1.2 — C and Python bindings (replaces UIO helper libraries for C / Python)

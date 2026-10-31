@@ -1,8 +1,8 @@
 [package]
 name = "mmreg"
 version = "1.0.0"
-edition = "2024"
-rust-version = "1.89"
+edition = "2021"
+rust-version = "1.75"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
 description = "Safe, concurrent 32-bit memory-mapped IO register access for Rust. Library and CLI for embedded and PC (linux) platforms."
 license = "MIT"

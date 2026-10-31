@@ -42,7 +42,7 @@ cargo add mmreg                          # with TOML profile files
 cargo add mmreg --no-default-features    # libc only
 ```
 
-`mmreg` needs Rust 1.89 or newer.
+`mmreg` needs Rust 1.75 or newer (the Rust of Yocto 5.0 "scarthgap").
 
 ---
 
@@ -66,7 +66,7 @@ without a matching toolchain, copy the musl binary (e.g.
 
 ## Including `mmreg` in a Yocto Project / PetaLinux Build
 
-You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) root filesystem using either a **source-built Cargo recipe** (a layer providing Rust $\ge 1.89$) or a **pre-built binary recipe** (compatible with any Yocto release).
+You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) root filesystem using either a **source-built Cargo recipe** (Rust $\ge 1.75$: Yocto 5.0 "scarthgap" or newer) or a **pre-built binary recipe** (compatible with any Yocto release).
 
 ### Option A: Building from Source with `inherit cargo` (`mmreg_1.0.0.bb`)
 
@@ -98,7 +98,7 @@ require ${BPN}-crates.inc
 
 ### Option B: Pre-Built Binary Recipe (For Older Yocto / PetaLinux Toolchains)
 
-If your BSP's `rustc` is older than 1.89, cross-compile the binary on your host (`just build-targets`) and package the target binary (`aarch64` or `armv7`) directly:
+If your BSP's `rustc` is older than 1.75, cross-compile the binary on your host (`just build-targets`) and package the target binary (`aarch64` or `armv7`) directly:
 
 ```bitbake
 SUMMARY = "Pre-built mmreg CLI binary for safe MMIO register access"

@@ -24,9 +24,11 @@
         * All operands validated before any hardware access; extra arguments rejected
     * Footprint
         * `libc` is the only mandatory dependency; TOML profiles behind the default `profile` feature (`--no-default-features` for the smallest binary)
-        * Release profile adds `panic = "abort"`; `rust-version = "1.89"`
+        * Release profile adds `panic = "abort"`
+    * Build environments
+        * Builds with Rust 1.75 (Yocto 5.0 "scarthgap"): edition 2021, `rust-version = "1.75"`, lockfile v3 with dependencies resolved for 1.75, `libc::flock` instead of `File::lock`; CI tests on 1.75
     * Targets
         * Release builds for `x86_64`, `aarch64`, `armv7` and `riscv64gc` Linux (glibc), plus static musl builds for `aarch64`, `armv7` and `riscv64gc`; `i686` dropped
     * Tooling
         * `justfile` is the single task runner (CI uses it), checks both feature sets and an MSRV job; `Cargo.lock` committed
-        * `docs/users` + `docs/developers` documentation
+        * `docs/users` + `docs/developers` documentation; 2.x roadmap (`TODO.md`, `docs/developers/05-roadmap-reference.md`) and draft `mmreg-block/1` block-file format for the Python debug layer (`docs/users/07-block-files.md`)

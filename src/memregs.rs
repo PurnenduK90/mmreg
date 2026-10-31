@@ -2,7 +2,7 @@
 
 use crate::error::MmregError;
 use crate::memcheck::UioMap;
-use crate::mmio::{Mapping, open_device, page_size};
+use crate::mmio::{open_device, page_size, Mapping};
 use std::path::Path;
 
 /// A way to reach physical memory (`/dev/mem`, UIO, or a custom/mock backend).

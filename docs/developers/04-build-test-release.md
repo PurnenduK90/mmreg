@@ -1,7 +1,10 @@
 # 4. Build, Test & Release
 
 ## Requirements
-- Rust 1.89+ (`rust-version` in `Cargo.toml`; `std::fs::File::lock` needs 1.89).
+- Rust 1.75+ (`rust-version` in `Cargo.toml`), the Rust of Yocto 5.0 "scarthgap". Clippy reads
+  `rust-version` and flags newer APIs; the CI `msrv` job builds and tests on 1.75 with the
+  committed `Cargo.lock`. Policy and the features to avoid:
+  [Roadmap Reference → Rust version](05-roadmap-reference.md#rust-version).
 - [`just`](https://github.com/casey/just) for the tasks below; `cargo-llvm-cov` for coverage;
   [`cross`](https://github.com/cross-rs/cross) and Docker for cross builds.
 
@@ -49,7 +52,7 @@ Targets without a prebuilt Rust standard library (`mips*`, `powerpc-*-gnuspe`) n
 
 ## CI/CD (`.github/workflows/`)
 - **[`ci.yml`](../../.github/workflows/ci.yml)** (push / PR to `main`): `lint` (`just lint`),
-  `test` (`just test coverage doc`), `msrv` (`cargo check` on 1.89, both feature sets), then
+  `test` (`just test coverage doc`), `msrv` (`cargo test --locked` on 1.75, both feature sets), then
   `build` (`just build-targets`).
 - **[`publish.yml`](../../.github/workflows/publish.yml)**: on a `v*.*.*` tag, `cargo publish`
   with the `CARGO_TOKEN` secret.

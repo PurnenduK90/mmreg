@@ -1,5 +1,5 @@
-use mmreg::MmregError;
 use mmreg::parse::{parse_u32_radix, parse_u64_radix};
+use mmreg::MmregError;
 use std::env;
 use std::process;
 
@@ -170,48 +170,32 @@ mod tests {
     fn test_cli_arguments() {
         assert!(run(&["mmreg", "--help"]).unwrap().contains("Usage: mmreg"));
         assert!(run(&["mmreg"]).is_err());
-        assert!(
-            run(&["mmreg", "--bad"])
-                .unwrap_err()
-                .contains("Unknown option: --bad")
-        );
-        assert!(
-            run(&["mmreg", "--validate"])
-                .unwrap_err()
-                .contains("[E_CLI_MISSING_PROFILE]")
-        );
-        assert!(
-            run(&["mmreg", "read"])
-                .unwrap_err()
-                .contains("Missing address argument")
-        );
+        assert!(run(&["mmreg", "--bad"])
+            .unwrap_err()
+            .contains("Unknown option: --bad"));
+        assert!(run(&["mmreg", "--validate"])
+            .unwrap_err()
+            .contains("[E_CLI_MISSING_PROFILE]"));
+        assert!(run(&["mmreg", "read"])
+            .unwrap_err()
+            .contains("Missing address argument"));
         for bad in ["0xZZZZ", "0x0x10"] {
-            assert!(
-                run(&["mmreg", "read", bad])
-                    .unwrap_err()
-                    .contains("[E_CLI_INVALID_ADDR]")
-            );
+            assert!(run(&["mmreg", "read", bad])
+                .unwrap_err()
+                .contains("[E_CLI_INVALID_ADDR]"));
         }
-        assert!(
-            run(&["mmreg", "read", "0x4000_0000", "0x5"])
-                .unwrap_err()
-                .contains("[E_CLI_EXTRA_ARGS]")
-        );
-        assert!(
-            run(&["mmreg", "write", "0x4000_0000"])
-                .unwrap_err()
-                .contains("[E_CLI_MISSING_VAL]")
-        );
-        assert!(
-            run(&["mmreg", "write", "0x4000_0000", "not_hex"])
-                .unwrap_err()
-                .contains("[E_CLI_INVALID_VAL]")
-        );
-        assert!(
-            run(&["mmreg", "erase", "0x4000_0000"])
-                .unwrap_err()
-                .contains("[E_CLI_UNKNOWN_CMD]")
-        );
+        assert!(run(&["mmreg", "read", "0x4000_0000", "0x5"])
+            .unwrap_err()
+            .contains("[E_CLI_EXTRA_ARGS]"));
+        assert!(run(&["mmreg", "write", "0x4000_0000"])
+            .unwrap_err()
+            .contains("[E_CLI_MISSING_VAL]"));
+        assert!(run(&["mmreg", "write", "0x4000_0000", "not_hex"])
+            .unwrap_err()
+            .contains("[E_CLI_INVALID_VAL]"));
+        assert!(run(&["mmreg", "erase", "0x4000_0000"])
+            .unwrap_err()
+            .contains("[E_CLI_UNKNOWN_CMD]"));
 
         assert_eq!(
             run(&["mmreg", "read", "0x4000_0000"]).unwrap(),

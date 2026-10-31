@@ -1,4 +1,4 @@
-//! The only module that talks to the OS about memory: page size, `mmap(2)` of a device file,
+//! The only module with `unsafe`: OS calls (page size, `mmap(2)` of a device file, `flock(2)`)
 //! and volatile 32-bit access.
 
 use std::fs::{File, OpenOptions};
@@ -32,6 +32,27 @@ pub(crate) fn open_device(path: &str, sync: bool) -> io::Result<File> {
     #[cfg(not(unix))]
     let _ = sync;
     options.open(path)
+}
+
+/// Takes an exclusive `flock(2)` on `file`, waiting for it; released when the file is closed.
+#[cfg(unix)]
+pub(crate) fn lock_exclusive(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+/// No-op: hardware access is Unix-only, so there is nothing to serialize.
+#[cfg(not(unix))]
+pub(crate) fn lock_exclusive(_: &File) -> io::Result<()> {
+    Ok(())
 }
 
 // 32-bit glibc and Android have a 32-bit `off_t`: physical addresses at or above 2 GiB need `mmap64`.

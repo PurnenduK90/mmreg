@@ -5,7 +5,7 @@
 //! when its file is closed, including when the process exits.
 
 use crate::error::MmregError;
-use crate::mmio::page_size;
+use crate::mmio::{lock_exclusive, page_size};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ pub(crate) fn lock_page_in(dir: &Path, address: u64) -> Result<File, MmregError>
         lock_path: path,
         details: e.to_string(),
     })?;
-    file.lock().map_err(|e| MmregError::LockAcquire {
+    lock_exclusive(&file).map_err(|e| MmregError::LockAcquire {
         details: e.to_string(),
     })?;
     Ok(file)
@@ -71,7 +71,7 @@ fn lock_dir() -> &'static Path {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

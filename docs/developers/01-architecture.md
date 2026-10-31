@@ -20,7 +20,7 @@ src/
 ```
 
 Dependencies: `libc` (mmap, sysconf); `toml` and `serde` only with the `profile` feature. Locking
-uses `std::fs::File::lock`.
+uses `flock(2)` through `mmio.rs`, the only module with `unsafe`.
 
 ---
 

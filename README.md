@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/mmreg.svg)](https://crates.io/crates/mmreg)
 [![Downloads](https://img.shields.io/crates/d/mmreg.svg)](https://crates.io/crates/mmreg)
 [![License](https://img.shields.io/crates/l/mmreg.svg)](LICENSE.txt)
-[![Rust](https://img.shields.io/badge/rust-1.89%2B-blue.svg?maxAge=3600)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-blue.svg?maxAge=3600)](https://www.rust-lang.org/)
 [![Build Status](https://github.com/PurnenduK90/mmreg/workflows/CI/badge.svg)](https://github.com/PurnenduK90/mmreg/actions)
 
 A Rust library and CLI for safe, concurrent access to 32-bit memory-mapped IO registers: a

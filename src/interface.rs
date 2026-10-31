@@ -1,6 +1,6 @@
 use crate::error::MmregError;
 use crate::lock::lock_page;
-use crate::memcheck::{RuntimePmGuard, resolve};
+use crate::memcheck::{resolve, RuntimePmGuard};
 use crate::memregs::{MapperType, MemoryMapper, OsMapper};
 use crate::register::Register;
 use crate::validation::SafetyProfile;
@@ -126,14 +126,14 @@ impl Interface {
 
     /// Checks that the base is 4-byte aligned and every register lies aligned inside `size`.
     fn validate_layout(&self) -> Result<(), MmregError> {
-        if !self.base_address.is_multiple_of(4) {
+        if self.base_address % 4 != 0 {
             return Err(MmregError::UnalignedAccess {
                 address: self.base_address,
                 offset: 0,
             });
         }
         for reg in &self.registers {
-            if !reg.offset.is_multiple_of(4) {
+            if reg.offset % 4 != 0 {
                 return Err(MmregError::UnalignedAccess {
                     address: self.base_address,
                     offset: reg.offset,
@@ -141,7 +141,7 @@ impl Interface {
             }
             if (reg.offset as usize)
                 .checked_add(4)
-                .is_none_or(|end| end > self.size)
+                .map_or(true, |end| end > self.size)
             {
                 return Err(MmregError::OutOfBoundsAccess {
                     register_name: reg.name.clone(),

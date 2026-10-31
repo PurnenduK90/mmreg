@@ -16,21 +16,23 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Lint both the default build and the minimal (`--no-default-features`) build
+# Lint the minimal (`--no-default-features`), default and full (`--all-features`) builds
 clippy:
-    cargo clippy --all-targets -- -D warnings
     cargo clippy --all-targets --no-default-features -- -D warnings
+    cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-targets --all-features -- -D warnings
 
 lint: fmt-check clippy
 
-# Unit and doc tests for both feature sets
+# Unit and doc tests for the minimal, default and full builds
 test:
-    cargo test
     cargo test --no-default-features
+    cargo test
+    cargo test --all-features
 
 # Line coverage, failing under 80%
 coverage:
-    cargo llvm-cov --all-targets --fail-under-lines 80
+    cargo llvm-cov --all-targets --all-features --fail-under-lines 80
 
 # API docs with warnings denied (catches broken intra-doc links)
 [unix]
@@ -45,19 +47,19 @@ doc:
 package-check:
     cargo package --list --allow-dirty
 
-# Release builds of every target in targets.txt with `cross`
+# Release builds of every target in targets.txt with `cross`: bring-up tools, so with `debug`
 [unix]
 build-targets:
     #!/usr/bin/env sh
     set -eu
     for target in $(tr -d '\r' < targets.txt | grep -v '^#' | grep -v '^$'); do
         echo "=== $target"
-        cross build --release --target "$target"
+        cross build --release --features debug --target "$target"
     done
 
 [windows]
 build-targets:
-    Get-Content targets.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and -not $_.StartsWith("#") } | ForEach-Object { Write-Host "=== $_"; cross build --release --target $_; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+    Get-Content targets.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and -not $_.StartsWith("#") } | ForEach-Object { Write-Host "=== $_"; cross build --release --features debug --target $_; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
 
 clean:
     cargo clean

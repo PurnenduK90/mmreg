@@ -42,25 +42,31 @@ cover, build environments, testing without hardware):
 
 | Version | Delivers | A project can drop |
 |---|---|---|
-| 1.0.x | fixes, older-Rust support, deprecation warnings | — |
-| **2.0** | `Device` (UIO by name, shared handle, lock protocol, IRQ), 8–64-bit access, `debug` feature | `devmem`; UIO helper libraries **for Rust users** |
-| **2.1** | C ABI and Python binding (offset access, locks, IRQ, inline `define()`) | UIO helper libraries **for C / Python users** |
-| 2.2 | Python by name: block files, field decoding, access-type safety, `dump` | hand-decoded register dumps |
-| 2.3 | CLI tools: block read, `watch`, `irq`, JSON output; SVD importer (Python) | ad-hoc polling scripts |
+| **1.0.0** | first stable API: Rust 1.75, `debug` feature, UIO lock protocol, width-aware `MemoryMapper`, `#[non_exhaustive]` public enums | `devmem` in release images |
+| 1.0.x | fixes only | — |
+| **1.1** | `Device` (UIO by name, shared handle, sequence guard, IRQ), 8–64-bit access, warnings API | `devmem`; UIO helper libraries **for Rust users** |
+| **1.2** | C ABI and Python binding (offset access, locks, IRQ, inline `define()`) | UIO helper libraries **for C / Python users** |
+| 1.3 | Python by name: block files, field decoding, access-type safety, `dump` | hand-decoded register dumps |
+| 1.4 | CLI tools: block read, `watch`, `irq`, JSON output; SVD importer (Python) | ad-hoc polling scripts |
 
-A project whose tools are written in C needs **2.1** to replace its UIO helper library and `devmem`;
-block files (2.2) are not required for that, because C tools use offsets from their own generated
+**Versioning follows [SemVer](https://semver.org/).** 1.0.0 is the first stable API: everything
+incompatible went in before it was tagged. Minor releases (1.1, 1.2, ...) only add: public enums
+and the register structs are `#[non_exhaustive]`, so new variants and fields are not breaking.
+Patch releases (1.0.x) only fix. Anything incompatible waits for 2.0.
+
+A project whose tools are written in C needs **1.2** to replace its UIO helper library and `devmem`;
+block files (1.3) are not required for that, because C tools use offsets from their own generated
 headers.
 
-### Layering (target, 2.0)
+### Layering (target, 1.1)
 
 ```text
 mmio::Mapping      unsafe mmap + volatile 8/16/32/64-bit access (only unsafe module)
 Device             one register window: UIO by name / path, or /dev/mem (debug);
                    offset access, lock protocol, sequence guard, IRQ; Send + Sync, &self
 Interface          named registers and fields on top of a Device (today's API)
-C ABI              thin wrapper over Device (2.1)
-Python             ctypes over the C ABI (2.1); by-name layer on block files (2.2, Python only)
+C ABI              thin wrapper over Device (1.2)
+Python             ctypes over the C ABI (1.2); by-name layer on block files (1.3, Python only)
 CLI                parsing and printing only; by address / UIO name + offset
 ```
 
@@ -72,8 +78,8 @@ for it.
 | Feature | Adds | Default |
 |---|---|---|
 | *(core)* | `Device` over UIO, `Interface`, locking, interrupts, blueprint and pre-flight checks | always |
-| `debug` | `/dev/mem` backend for addresses no UIO device covers (debug and bring-up builds) | off |
-| `profile` | TOML safety profiles (exists today) | on |
+| `debug` | `/dev/mem` backend for addresses no UIO device covers (debug and bring-up builds; since 1.0.0) | off |
+| `profile` | TOML safety profiles (since 1.0.0) | on |
 | `capi` | C ABI (`libmmreg.a`, `libmmreg.so`, `mmreg.h`); the Python binding uses it | off |
 
 Block files add no feature: they are read by the Python package (standard-library `json`), not by
@@ -90,9 +96,10 @@ profile checks read registers by physical address too, so outside UIO regions th
 
 ### Lock protocol (documented, so other programs can join)
 
-- **UIO-backed access:** exclusive `flock` on an open `/dev/uioN`. Any program that takes
-  `flock(LOCK_EX)` on the same device excludes and is excluded by mmreg, whatever its language.
-- **`/dev/mem` access (`debug`):** per-page lock files (today's scheme, `lock.rs`).
+- **UIO-backed access (since 1.0.0):** exclusive `flock` on an open `/dev/uioN`, per access. Any
+  program that takes `flock(LOCK_EX)` on the same device excludes and is excluded by mmreg,
+  whatever its language.
+- **`/dev/mem` access (`debug`) and custom mappers:** per-page lock files (`lock.rs`).
 - **Within a process:** `flock` does not exclude threads sharing one open file and does exclude two
   handles of one process on the same device. So a `Device` serialises its own threads with a mutex,
   handles to the same device in one process share one open file (a per-process registry), and the
@@ -106,28 +113,23 @@ profile checks read registers by physical address too, so outside UIO regions th
 
 - `Interface` needs `&mut self` for every access (the `raw` cache), so one handle cannot be shared
   between threads; bindings and multi-threaded applications need a `&self`, `Send + Sync` handle.
-- The UIO file is closed right after `mmap` (`memregs.rs`), so there is no descriptor to `flock`
-  or to wait on for interrupts.
+- `Interface` opens `/dev/uioN` a second time for the lock; the mapping's own file is closed after
+  `mmap`, so there is no descriptor to wait on for interrupts. `Device` (1.1) keeps one file for
+  mapping, lock and interrupts.
 - Each access opens (and may create) a lock file, `flock`s and closes it; each
   `read_register_at` also scans sysfs and maps/unmaps. Fine for the CLI, costly for a library
   reading a data register in a loop.
 - UIO devices are always opened read-write, so read-only tools need write permission on
   `/dev/uioN`.
-- `MemoryMapper` has only `read_u32` / `write_u32`; adding widths changes a public trait.
-- `MmregError` and `MapperType` are not `#[non_exhaustive]`: every new variant is a breaking
-  change.
 - `write_subregister` read-modify-writes the whole register, clearing pending W1C bits.
 - Four `eprintln!`s in `memcheck.rs` (clock count, runtime PM guard) print from the library.
 - Safety-profile checks read through `read_register_at(addr, true)`, i.e. `/dev/mem` for SoC
-  registers: they depend on `debug` once `/dev/mem` is gated.
+  registers: outside UIO regions they need a `debug` build.
 
 ---
 
-## 1.0.x — fixes and preparation (non-breaking)
+## 1.0.x — fixes (patch releases)
 
-- [ ] **No stderr from the library.** Return the `memcheck.rs` warnings to the caller (a warnings
-  list or callback on `Interface`) and let the CLI print. Prerequisite for the bindings, which must
-  not write to a host program's stderr.
 - [ ] **Leaf-only `/proc/iomem` match.** A range inside a bus window (`PCI Bus 0000:00`, `soc`,
   `amba`) passes the blueprint even when no device claims it. Accept only when the innermost
   (most indented) resource covering the range is not itself a parent of other resources, or when a
@@ -135,12 +137,10 @@ profile checks read registers by physical address too, so outside UIO regions th
 - [ ] **One lock directory for everyone.** A user who cannot create `/run/lock/mmreg` falls back to
   `/tmp/mmreg-lock` while root uses `/run/lock/mmreg`, and the two do not exclude each other. Either
   refuse instead of falling back when `/run/lock` exists, or always use one directory.
-- [ ] **Deprecation warnings for 2.0:** `/dev/mem` access prints that 2.0 needs the `debug`
-  feature for it; document the upcoming breaking changes in the changelog.
 - [ ] **Docs example check.** Confirm the ZynqMP `GEM3_REF_CTRL` clock-active bit used in the
   docs (bit 25, `0x0200_0000`) against UG1087.
 
-## 2.0 — library core (replaces `devmem`, and UIO helper libraries for Rust)
+## 1.1 — library core (replaces `devmem`, and UIO helper libraries for Rust)
 
 - [ ] **`Device`:** one register window, `&self` access, `Send + Sync`, owns the mapping and the
   open device file.
@@ -155,9 +155,8 @@ profile checks read registers by physical address too, so outside UIO regions th
   - `.read_only()`: `O_RDONLY` + `PROT_READ`, so read-only tools work with read permission only.
   - `read_u8/u16/u32/u64(offset)`, `write_*`, `update_u32(offset, mask, value)` (locked RMW).
   - Blueprint, pre-flight and safety-profile checks run once at open.
-- [ ] **Lock protocol** as described under Direction, documented in `docs/developers/` as a
-  contract other programs can implement. Device `flock` for UIO; page lock files only for
-  `/dev/mem`.
+- [ ] **Lock protocol within a process:** one open `/dev/uioN` per device and process (registry)
+  shared by its `Device` handles, a mutex for threads; the inter-process protocol is unchanged.
 - [ ] **Sequence guard:** `let _g = dev.lock()?;` holds the lock until dropped; reentrant.
 - [ ] **Interrupts (UIO):** `irq_unmask()`, `irq_wait(timeout) -> Option<count>` (`poll` + `read`).
   Document "clear the source, then unmask" for level-triggered sources.
@@ -168,22 +167,18 @@ profile checks read registers by physical address too, so outside UIO regions th
   `Device` (offset, mask, shift; `update_u32` for read-modify-write), and which access-type rules
   a generator should apply in the field writers it emits (W1C / pulse fields written without
   read-modify-write), so production code is as safe as the Python debug layer.
-- [ ] **Widths in `MemoryMapper`:** `read(offset, width)` / `write(offset, width, value)` (or
-  per-width methods), aligned to the width.
-- [ ] **`debug` feature** gates the `/dev/mem` backend (off by default); `[E_DEBUG_DISABLED]`
-  without it; `mmreg --version` shows enabled features.
-- [ ] **`#[non_exhaustive]`** on `MmregError`, `MapperType` and future public enums, so later
-  versions can add variants without another major release.
+- [ ] **No stderr from the library.** Return the `memcheck.rs` warnings to the caller (a warnings
+  list or callback on `Interface` / `Device`) and let the CLI print. Prerequisite for the bindings,
+  which must not write to a host program's stderr.
 - [ ] **CLI:** `--width 8|16|32|64` on `read` / `write`; `read|write <uio name> <offset>` for UIO
-  devices (works without `debug`); `--version`.
+  devices (works without `debug`); `--version` showing the enabled features.
 - [ ] **Tests:** lock protocol (two processes, two threads, nested guard), read-only open, name
   lookup (duplicates, missing), IRQ wait and unmask with a fake device; approach in
   [Roadmap Reference → Testing Without Hardware](docs/developers/05-roadmap-reference.md#testing-without-hardware).
 - [ ] **User docs:** setting up UIO (Device Tree `generic-uio`, `uio_pdrv_genirq.of_id`, udev
   permissions), from the Roadmap Reference.
-- [ ] **Migration guide** 1.x → 2.0 in `docs/users/`.
 
-## 2.1 — C and Python bindings (replaces UIO helper libraries for C / Python)
+## 1.2 — C and Python bindings (replaces UIO helper libraries for C / Python)
 
 - [ ] **C ABI (`capi` feature):** `cdylib` + `staticlib`, opaque `mmreg_dev *`, `int` error
   returns with `mmreg_last_error()` (code + message, thread-local), no panics across the boundary.
@@ -209,7 +204,7 @@ profile checks read registers by physical address too, so outside UIO regions th
   library-only build (`--no-default-features --features capi`), static library + header + `.pc`,
   Python module; release-image CLI vs `debug` CLI; an example Yocto recipe in `docs/`.
 
-## 2.2 — Python by name (block files, debug and experiments)
+## 1.3 — Python by name (block files, debug and experiments)
 
 Specification: [docs/users/07-block-files.md](docs/users/07-block-files.md) (draft; freeze when
 this version ships). Everything here is in the Python package; the Rust crate, C library and CLI
@@ -225,11 +220,11 @@ do not change.
   `d.dump(diff_reset=True)`; registers print decoded.
 - [ ] **Access-type rules** from the spec (write only what was asked, no read side effects without
   `side_effects=True`, refused accesses).
-- [ ] **Wide registers** (`width` > `bus_width`): word order from the spec, under one lock.
+- [ ] **Wide registers** (`regwidth` > `accesswidth`): word order from the spec, under one lock.
 - [ ] **Instance checks** run like a safety profile before first access.
 - [ ] **`python -m mmreg check <file>`** for generators' CI (validate, no hardware access).
 
-## 2.3 — CLI and Python tools
+## 1.4 — CLI and Python tools
 
 - [ ] **Block read (CLI):** `read <addr | uio name + offset> --count N` (hexdump-style, one lock per
   page).
@@ -255,12 +250,12 @@ What a project needs from mmreg before it can drop its own UIO helper library an
 
 | Need | Version |
 |---|---|
-| Builds with the project's Yocto / Buildroot Rust | 1.0.x |
-| Open a UIO device by name; offset read / write / update; read-only open | 2.0 |
-| Lock held across a sequence; lock protocol other programs can follow | 2.0 |
-| UIO interrupt unmask / wait with timeout | 2.0 |
-| Address access replacing `devmem` (`read` / `write <address>`, 8–64-bit, `debug` builds) | 2.0 |
-| Production build without `/dev/mem` or parsers | 2.0 |
-| Static C library + header + `pkg-config`; Python module | 2.1 |
-| Production field access with safe W1C / pulse handling (generated code, guide) | 2.0 |
-| Debugging by name from generated block files (Python), decoded dumps | 2.2 |
+| Builds with the project's Yocto / Buildroot Rust | 1.0.0 |
+| Open a UIO device by name; offset read / write / update; read-only open | 1.1 |
+| Lock held across a sequence; lock protocol other programs can follow | 1.1 |
+| UIO interrupt unmask / wait with timeout | 1.1 |
+| Address access replacing `devmem` (`read` / `write <address>`, 8–64-bit, `debug` builds) | 1.1 |
+| Production build without `/dev/mem` or parsers | 1.0.0 |
+| Static C library + header + `pkg-config`; Python module | 1.2 |
+| Production field access with safe W1C / pulse handling (generated code, guide) | 1.1 |
+| Debugging by name from generated block files (Python), decoded dumps | 1.3 |

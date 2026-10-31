@@ -15,6 +15,8 @@ categories = ["embedded", "hardware-support"]
 default = ["profile"]
 # TOML safety-profile files (`SafetyProfile::parse`, `--validate`); about 170 KB of the binary.
 profile = ["dep:serde", "dep:toml"]
+# Raw /dev/mem access for addresses no UIO region covers: debug and bring-up builds only.
+debug = []
 
 [dependencies]
 libc = "0.2"

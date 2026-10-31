@@ -18,12 +18,20 @@ cd mmreg
 cargo install --path .
 ```
 
-### Minimal Build (No TOML Profiles)
-The `profile` feature (on by default) adds TOML safety-profile files (`--validate`) and the
-`toml` + `serde` dependencies. For the smallest binary, which depends on `libc` only:
+### Features: Debug, Release and Minimal Builds
+
+| Feature | Default | Adds |
+| :--- | :--- | :--- |
+| `profile` | on | TOML safety-profile files (`--validate`); the `toml` + `serde` dependencies |
+| `debug` | off | `/dev/mem` access for addresses no UIO region covers (`devmem` replacement) |
+
 ```sh
-cargo install mmreg --no-default-features
+cargo install mmreg --features debug         # bring-up / debug images: any address
+cargo install mmreg                          # release images: UIO devices only
+cargo install mmreg --no-default-features    # smallest: UIO only, libc only, no --validate
 ```
+
+The prebuilt binaries (`just build-targets`) are built with `debug`.
 
 ---
 
@@ -48,7 +56,7 @@ cargo add mmreg --no-default-features    # libc only
 
 ## Cross-Compiling for Embedded Linux Targets
 
-`mmreg` uses [`cross`](https://github.com/cross-rs/cross) to build release binaries for embedded architectures listed in `targets.txt`: `x86_64`, `aarch64`, `armv7` (hard-float) and `riscv64gc` Linux, each as a glibc build (for distro / Yocto images) and, except `x86_64`, as a static musl build that runs on any rootfs:
+`mmreg` uses [`cross`](https://github.com/cross-rs/cross) to build release binaries for embedded architectures listed in `targets.txt`: `x86_64`, `aarch64`, `armv7` (hard-float) and `riscv64gc` Linux, each as a glibc build (for distro / Yocto images), and `aarch64` and `armv7` also as a static musl build that runs on any rootfs:
 
 ```sh
 # Install cross
@@ -85,7 +93,9 @@ S = "${WORKDIR}/git"
 inherit cargo cargo-update-recipe-crates
 require ${BPN}-crates.inc
 
-# Optional: smallest binary, without TOML profile files (--validate)
+# Development images: /dev/mem access for any address (devmem replacement)
+# CARGO_BUILD_FLAGS:append = " --features debug"
+# Release images, smallest binary: UIO only, no TOML profile files (--validate)
 # CARGO_BUILD_FLAGS:append = " --no-default-features"
 ```
 
@@ -158,17 +168,21 @@ To get full benefit from `mmreg`'s automatic UIO backend and Hardware Pre-Flight
 When a peripheral is bound to the Linux `uio_pdrv_genirq` or `generic-uio` driver, `mmreg` automatically detects and uses `/dev/uioN`.
 - You can grant non-root users access to `/dev/uioN` via a `udev` rule (e.g., assigning group `uio` or `dialout` with mode `0660`).
 
-### 2. Using `/dev/mem` Fallback
-When no UIO device maps the target address, `mmreg` falls back to `/dev/mem`.
+### 2. Using `/dev/mem` (Debug Builds)
+When no UIO device maps the target address, an `mmreg` built with the `debug` feature uses
+`/dev/mem`; other builds refuse with `[E_DEBUG_DISABLED]` before opening anything. Keep `debug`
+builds to development images.
 - Accessing `/dev/mem` requires `root` privileges (`sudo mmreg ...`) or the `CAP_SYS_RAWIO` capability:
   ```sh
   sudo setcap cap_sys_rawio+ep $(which mmreg)
   ```
 - With `CONFIG_STRICT_DEVMEM=y` the kernel refuses `/dev/mem` mappings of RAM, and with `CONFIG_IO_STRICT_DEVMEM=y` also of ranges claimed by a driver (`[E_DEVMEM_MMAP]`, `Operation not permitted`); expose such devices through UIO.
 
-### 3. Lock Directory
-Each access locks its physical page through a file in `/run/lock/mmreg` (or `/tmp/mmreg-lock` when
-`/run/lock` is not writable). The first user creates the directory world-writable and sticky
+### 3. Locking and the Lock Directory
+Every access to a UIO device holds an exclusive `flock` on `/dev/uioN` itself, so C programs that
+lock their own `/dev/uioN` descriptor the same way exclude and are excluded by `mmreg`. Accesses
+through `/dev/mem` lock their physical page through a file in `/run/lock/mmreg` (or
+`/tmp/mmreg-lock` when `/run/lock` is not writable). The first user creates the directory world-writable and sticky
 (`1777`). All users of a device must resolve to the same directory, so make sure `/run/lock` is
 writable for everyone (it is `1777` on systemd and most Yocto images) or pre-create
 `/run/lock/mmreg` with mode `1777`.

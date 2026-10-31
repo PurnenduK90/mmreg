@@ -6,6 +6,9 @@
 //! ## Features
 //! - `profile` (default): load `SafetyProfile`s from TOML files. Without it the crate depends on
 //!   `libc` only; profiles can still be built in code.
+//! - `debug` (off): `/dev/mem` access for addresses no UIO region covers, for debug and bring-up
+//!   builds. Without it such addresses fail with `[E_DEBUG_DISABLED]` before anything is opened, so
+//!   release builds cannot reach arbitrary physical memory.
 //!
 //! ## Example Usage
 //!
@@ -32,7 +35,7 @@ mod validation;
 
 pub use error::MmregError;
 pub use interface::Interface;
-pub use memregs::{MapperType, MemoryMapper};
+pub use memregs::{MapperType, MemoryMapper, Width};
 pub use register::{Register, SubRegister};
 pub use validation::{SafetyProfile, ValidationCheck};
 

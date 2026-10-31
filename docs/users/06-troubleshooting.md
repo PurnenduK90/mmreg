@@ -35,6 +35,7 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 | :--- | :--- | :--- |
 | `E_DEVMEM_OPEN` | `/dev/mem` cannot be opened (usually permission denied). | Run with `sudo`, grant `CAP_SYS_RAWIO` (`sudo setcap cap_sys_rawio+ep $(which mmreg)`), or bind the device to a UIO driver. |
 | `E_DEVMEM_MMAP` | `mmap` of `/dev/mem` failed; `Operation not permitted` comes from `CONFIG_STRICT_DEVMEM` / `CONFIG_IO_STRICT_DEVMEM`. | Expose the peripheral through UIO (`compatible = "generic-uio"`). |
+| `E_DEBUG_DISABLED` | The address is in no UIO region, and this build has no `/dev/mem` access. | Bind the peripheral to UIO, or use an `mmreg` built with `--features debug` (development images). |
 | `E_UIO_OPEN` | `/dev/uioN` cannot be opened. | Check `ls -l /dev/uio*` and the udev rule / permissions. |
 | `E_UIO_MMAP` | `mmap` of `/dev/uioN` failed. | Check the region's `/sys/class/uio/uioN/maps/mapM/size`. |
 | `E_UIO_ADDRESS` | With an explicit `MapperType::Uio`, the range is outside the region's sysfs `addr`/`size`, or those files are unreadable. | Keep the `Interface` inside the region, or use `MapperType::Auto`. |
@@ -45,8 +46,8 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 | :--- | :--- | :--- |
 | `E_UNALIGNED_ACCESS` | The base address or a register offset is not a multiple of 4. | Use 4-byte-aligned addresses and offsets. |
 | `E_OUT_OF_BOUNDS` | A register's `offset + 4` exceeds the `Interface` size. | Increase the size or fix the offset. |
-| `E_LOCK_OPEN` | The page lock file cannot be opened or created. | Make `/run/lock/mmreg` (or `/tmp/mmreg-lock`) writable for all users (mode `1777`). |
-| `E_LOCK_ACQUIRE` | Locking the page lock file failed. | Check the lock directory's filesystem supports `flock`. |
+| `E_LOCK_OPEN` | The lock file cannot be opened: `/dev/uioN` (UIO devices) or the page lock file (`/dev/mem`). | For UIO, give the user read access to `/dev/uioN`; for `/dev/mem`, make `/run/lock/mmreg` (or `/tmp/mmreg-lock`) writable for all users (mode `1777`). |
+| `E_LOCK_ACQUIRE` | `flock` on the lock file failed. | Check the filesystem supports `flock`. |
 
 ## API
 
@@ -74,5 +75,7 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 **A read works with `sudo` but not without.** Non-root users see no addresses in `/proc/iomem` and
 cannot open `/dev/mem`. Bind the device to UIO and give your user access to `/dev/uioN`.
 
-**Two processes still clobber a bitfield.** Only `mmreg` users take the page lock: a kernel driver
-or another tool writing the same register is not excluded.
+**Two processes still clobber a bitfield.** The lock is advisory: only programs that take it are
+excluded. For UIO devices that includes any program holding `flock(LOCK_EX)` on its own
+`/dev/uioN` descriptor; a kernel driver, `devmem`, or a program mapping the device without locking
+is not excluded.

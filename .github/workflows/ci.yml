@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.75
-      - run: cargo test --locked && cargo test --locked --no-default-features
+      - run: cargo test --locked --no-default-features && cargo test --locked --all-features
 
   build:
     name: Cross Build

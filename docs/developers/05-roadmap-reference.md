@@ -1,6 +1,6 @@
 # 5. Roadmap Reference
 
-Background for the 2.x work in [TODO.md](../../TODO.md): the use case that drives it, the kernel
+Background for the 1.x work in [TODO.md](../../TODO.md): the use case that drives it, the kernel
 interfaces it builds on, the API it must cover, and the build environments it must fit. Everything
 needed to implement the roadmap is here or in the linked kernel documentation; no particular
 project's sources are required.
@@ -21,8 +21,8 @@ A typical adopter is an embedded Linux board with an FPGA or SoC fabric:
   sequences, interrupt wait.
 - `devmem` (BusyBox) for bring-up and field debugging.
 
-mmreg replaces the helper library (2.0 for Rust, 2.1 for C / Python) and `devmem` (2.0). The
-project keeps its generated headers for production code; block files (2.2) add access by name in
+mmreg replaces the helper library (1.1 for Rust, 1.2 for C / Python) and `devmem` (1.1). The
+project keeps its generated headers for production code; block files (1.3) add access by name in
 Python for debugging and experiments.
 
 ---
@@ -88,10 +88,10 @@ Read-only access (`O_RDONLY` + `PROT_READ`) works with read permission only, so 
 
 ## The API to Cover (UIO Helper Library)
 
-What project-local helper libraries typically provide, and so what `Device` (2.0) and the C ABI
-(2.1) must offer. A program written against such a library must port mechanically:
+What project-local helper libraries typically provide, and so what `Device` (1.1) and the C ABI
+(1.2) must offer. A program written against such a library must port mechanically:
 
-| Helper library call | Semantics | mmreg 2.0 (Rust) | mmreg 2.1 (C) |
+| Helper library call | Semantics | mmreg 1.1 (Rust) | mmreg 1.2 (C) |
 |---|---|---|---|
 | `find(name) -> "/dev/uioN"` | look up by `uioN/name` | `uio::find(name)` | `mmreg_find_uio` |
 | `open(name, dev, writable)` | `dev` overrides the lookup; map region 0 | `Device::open_uio(name)` / `open_uio_path(dev)`, `.read_only()` | `mmreg_open_uio(name, flags)`, `mmreg_open_uio_path` |
@@ -164,6 +164,6 @@ version).
 - Interrupt wait: a fake `/dev/uioN` backed by a `socketpair` or pipe (write 4 bytes to raise,
   check the unmask write), so `poll` + `read` run for real.
 - Lock protocol: two processes (`std::process::Command` on the test binary) and two threads on
-  one temp file; a C test program for C ↔ Rust interop (2.1).
+  one temp file; a C test program for C ↔ Rust interop (1.2).
 - On real hardware (optional CI runner): QEMU with a `generic-uio` node, or any board with UIO;
   tests that need it are `#[ignore]` by default.

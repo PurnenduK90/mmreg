@@ -10,3 +10,5 @@ Architecture and development documentation for contributors.
    parsing, FPGA detection, clock checks, the runtime PM guard and safety profiles.
 4. **[Build, Test & Release](04-build-test-release.md)**: `just` tasks, features and binary size,
    cross compilation and CI.
+5. **[Roadmap Reference](05-roadmap-reference.md)**: background for the 1.x roadmap: use case,
+   kernel UIO interface, the helper-library API to cover, build environments, testing.

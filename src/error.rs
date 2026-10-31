@@ -4,8 +4,10 @@ use std::path::PathBuf;
 /// Structured error codes and diagnostics for `mmreg`.
 ///
 /// Every variant produces a deterministic `[E_*]` prefix, context, and actionable `Remediation:`
-/// guidance when formatted via `Display` or converted into a `String`.
+/// guidance when formatted via `Display` or converted into a `String`. New variants may be added in
+/// minor releases, so matches need a wildcard arm; match on [`MmregError::code`] for stable handling.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MmregError {
     /// Target physical address range is absent from `/sys/class/uio`, `/proc/iomem`, and Device Tree `reg`.
     BlueprintUnmapped { address: u64, size: usize },
@@ -120,6 +122,8 @@ pub enum MmregError {
         msb: u8,
         lsb: u8,
     },
+    /// The address is in no UIO region and this build has no `/dev/mem` access (`debug` feature).
+    DebugDisabled { address: u64 },
 }
 
 impl MmregError {
@@ -147,6 +151,7 @@ impl MmregError {
             MmregError::RegisterNotFound { .. } => "E_REG_NOT_FOUND",
             MmregError::SubRegisterNotFound { .. } => "E_SUBREG_NOT_FOUND",
             MmregError::InvalidSubRegister { .. } => "E_SUBREG_RANGE",
+            MmregError::DebugDisabled { .. } => "E_DEBUG_DISABLED",
         }
     }
 }
@@ -397,6 +402,12 @@ impl fmt::Display for MmregError {
                  Remediation: Use 31 >= msb >= lsb.",
                 code, subregister_name, register_name, msb, lsb
             ),
+            MmregError::DebugDisabled { address } => write!(
+                f,
+                "[{}] Address 0x{:X} is not inside any UIO region, and this mmreg build has no /dev/mem access. \
+                 Remediation: Bind the peripheral to UIO (`compatible = \"generic-uio\"`), or use an mmreg built with the `debug` feature (development images only).",
+                code, address
+            ),
         }
     }
 }
@@ -582,6 +593,12 @@ mod tests {
                     lsb: 5,
                 },
                 "E_SUBREG_RANGE",
+            ),
+            (
+                MmregError::DebugDisabled {
+                    address: 0x4000_0000,
+                },
+                "E_DEBUG_DISABLED",
             ),
         ];
 

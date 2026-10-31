@@ -11,13 +11,18 @@ pub trait MemoryMapper: Send {
     fn map(&mut self, address: u64, size: usize) -> Result<(), MmregError>;
     fn unmap(&mut self);
     fn is_mapped(&self) -> bool;
-    fn read_u32(&self, offset: u32) -> u32;
-    fn write_u32(&self, offset: u32, value: u32);
+    fn read(&self, offset: u32, width: Width) -> u64;
+    fn write(&self, offset: u32, width: Width, value: u64);
 }
+
+pub enum Width { U8, U16, U32, U64 }
 ```
 
-`offset` is relative to the `address` passed to `map`. `Interface` only calls `read_u32` /
-`write_u32` while mapped, with `offset % 4 == 0` and `offset + 4 <= size`.
+`offset` is relative to the `address` passed to `map`. Callers only read and write while mapped,
+with `offset` aligned to the width and the access inside `size`. Values are zero-extended to
+`u64`; writes use the low `width` bits. `Interface` uses `Width::U32`; the other widths are there
+so 1.1 can add 8/16/64-bit access without changing the trait (SemVer: the trait is part of the
+stable 1.x API).
 
 `OsMapper` implements it for a resolved `MapperType` (`DevMem` or `Uio`); the difference between
 the two is only how the window is opened. The OS-facing part, `mmio::Mapping`, maps a device file

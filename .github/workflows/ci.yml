@@ -35,12 +35,12 @@ jobs:
       - run: just test coverage doc
 
   msrv:
-    name: MSRV (1.89)
+    name: MSRV (1.75, Yocto scarthgap)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.89
-      - run: cargo check --all-targets && cargo check --all-targets --no-default-features
+      - uses: dtolnay/rust-toolchain@1.75
+      - run: cargo test --locked --no-default-features && cargo test --locked --all-features
 
   build:
     name: Cross Build

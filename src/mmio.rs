@@ -1,6 +1,7 @@
-//! The only module that talks to the OS about memory: page size, `mmap(2)` of a device file,
-//! and volatile 32-bit access.
+//! The only module with `unsafe`: OS calls (page size, `mmap(2)` of a device file, `flock(2)`)
+//! and volatile 8/16/32/64-bit access.
 
+use crate::memregs::Width;
 use std::fs::{File, OpenOptions};
 use std::io;
 
@@ -33,6 +34,39 @@ pub(crate) fn open_device(path: &str, sync: bool) -> io::Result<File> {
     let _ = sync;
     options.open(path)
 }
+
+/// Takes an exclusive `flock(2)` on `file`, waiting for it; released when the file is closed.
+#[cfg(unix)]
+pub(crate) fn lock_exclusive(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+/// Releases a `flock(2)` taken with [`lock_exclusive`], keeping the file open.
+#[cfg(unix)]
+pub(crate) fn unlock(file: &File) {
+    use std::os::unix::io::AsRawFd;
+    unsafe {
+        libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+    }
+}
+
+/// No-op: hardware access is Unix-only, so there is nothing to serialize.
+#[cfg(not(unix))]
+pub(crate) fn lock_exclusive(_: &File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn unlock(_: &File) {}
 
 // 32-bit glibc and Android have a 32-bit `off_t`: physical addresses at or above 2 GiB need `mmap64`.
 #[cfg(all(
@@ -92,23 +126,41 @@ impl Mapping {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 
-    /// Volatile 32-bit read at `offset` bytes past the requested address.
+    /// Volatile read of `width` bits at `offset` bytes past the requested address.
     #[inline]
-    pub(crate) fn read_u32(&self, offset: u32) -> u32 {
-        unsafe { self.register(offset).read_volatile() }
+    pub(crate) fn read(&self, offset: u32, width: Width) -> u64 {
+        let p = self.register(offset, width);
+        unsafe {
+            match width {
+                Width::U8 => u64::from(p.read_volatile()),
+                Width::U16 => u64::from(p.cast::<u16>().read_volatile()),
+                Width::U32 => u64::from(p.cast::<u32>().read_volatile()),
+                Width::U64 => p.cast::<u64>().read_volatile(),
+            }
+        }
     }
 
-    /// Volatile 32-bit write at `offset` bytes past the requested address.
+    /// Volatile write of the low `width` bits of `value` at `offset` bytes past the requested
+    /// address.
     #[inline]
-    pub(crate) fn write_u32(&self, offset: u32, value: u32) {
-        unsafe { self.register(offset).write_volatile(value) }
+    pub(crate) fn write(&self, offset: u32, width: Width, value: u64) {
+        let p = self.register(offset, width);
+        unsafe {
+            match width {
+                Width::U8 => p.write_volatile(value as u8),
+                Width::U16 => p.cast::<u16>().write_volatile(value as u16),
+                Width::U32 => p.cast::<u32>().write_volatile(value as u32),
+                Width::U64 => p.cast::<u64>().write_volatile(value),
+            }
+        }
     }
 
-    /// `Interface` guarantees `offset % 4 == 0` and `offset + 4 <= size` before any access.
+    /// Callers guarantee `offset` is aligned to `width` and the access lies inside the window.
     #[inline]
-    fn register(&self, offset: u32) -> *mut u32 {
-        debug_assert!(self.data_offset + offset as usize + 4 <= self.len);
-        unsafe { self.ptr.add(self.data_offset + offset as usize) }.cast()
+    fn register(&self, offset: u32, width: Width) -> *mut u8 {
+        let at = self.data_offset + offset as usize;
+        debug_assert!(at % width.bytes() == 0 && at + width.bytes() <= self.len);
+        unsafe { self.ptr.add(at) }
     }
 }
 
@@ -130,15 +182,21 @@ mod tests {
         let ps = page_size();
         assert!(ps >= 4096 && ps.is_power_of_two());
 
-        let mut backing = [0u32; 8];
+        let mut backing = [0u64; 4];
         let mapping = std::mem::ManuallyDrop::new(Mapping {
             ptr: backing.as_mut_ptr().cast(),
             len: 32,
-            data_offset: 4,
+            data_offset: 8,
         });
-        mapping.write_u32(8, 0xCAFE_BABE);
-        assert_eq!(mapping.read_u32(8), 0xCAFE_BABE);
-        assert_eq!(backing[3], 0xCAFE_BABE);
+        mapping.write(8, Width::U64, 0x0123_4567_89AB_CDEF);
+        assert_eq!(backing[2], 0x0123_4567_89AB_CDEF);
+        assert_eq!(mapping.read(8, Width::U64), 0x0123_4567_89AB_CDEF);
+        mapping.write(0, Width::U8, 0x1FF);
+        mapping.write(2, Width::U16, 0xBEEF);
+        assert_eq!(mapping.read(0, Width::U8), 0xFF);
+        assert_eq!(mapping.read(2, Width::U16), 0xBEEF);
+        mapping.write(4, Width::U32, 0xCAFE_BABE);
+        assert_eq!(mapping.read(4, Width::U32), 0xCAFE_BABE);
     }
 
     #[test]

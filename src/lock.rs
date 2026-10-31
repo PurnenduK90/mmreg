@@ -1,19 +1,65 @@
-//! Inter-process lock per physical page, held for one access or read-modify-write.
+//! Inter-process locking, held for one access or read-modify-write. The protocol, which any program
+//! can follow to exclude and be excluded by mmreg:
 //!
-//! Lock files (`<page base>-<page end>.lock`) are never deleted: unlinking one while another
-//! process waits on it lets two processes hold "the" lock on different inodes. A lock is released
-//! when its file is closed, including when the process exits.
+//! - **UIO:** exclusive `flock(2)` on an open file of the `/dev/uioN` device. C programs that lock
+//!   their own `/dev/uioN` file descriptor this way take part without any mmreg code.
+//! - **`/dev/mem` and custom mappers:** exclusive `flock(2)` on
+//!   `<lock dir>/<page base>-<page end>.lock` for the physical page holding the register.
+//!
+//! `flock` locks belong to an open file, so two files opened in one process exclude each other too.
+//! Lock files are never deleted: unlinking one while another process waits on it lets two
+//! processes hold "the" lock on different inodes. A lock is released when its file is unlocked or
+//! closed, including when the process exits.
 
 use crate::error::MmregError;
-use crate::mmio::page_size;
+use crate::mmio::{lock_exclusive, page_size, unlock};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Locks the page containing `address`; the lock is held until the returned file is dropped.
-pub(crate) fn lock_page(address: u64) -> Result<File, MmregError> {
-    lock_page_in(lock_dir(), address)
+/// An open `/dev/uioN`, locked for every access to that device (UIO lock protocol).
+pub(crate) struct DeviceLock(File);
+
+impl DeviceLock {
+    /// Opens `device_path` read-only: enough for `flock`.
+    pub(crate) fn open(device_path: &str) -> Result<Self, MmregError> {
+        File::open(device_path)
+            .map(DeviceLock)
+            .map_err(|e| MmregError::LockOpen {
+                lock_path: PathBuf::from(device_path),
+                details: e.to_string(),
+            })
+    }
+}
+
+/// A held lock, released when dropped.
+pub(crate) enum LockGuard<'a> {
+    Device(&'a File),
+    /// Closing the page lock file releases it.
+    Page(#[allow(dead_code)] File),
+}
+
+impl Drop for LockGuard<'_> {
+    fn drop(&mut self) {
+        if let LockGuard::Device(file) = self {
+            unlock(file);
+        }
+    }
+}
+
+/// Takes the lock for an access at physical `address`: the device's lock when it has one, the
+/// page lock file otherwise.
+pub(crate) fn lock(device: Option<&DeviceLock>, address: u64) -> Result<LockGuard<'_>, MmregError> {
+    match device {
+        Some(DeviceLock(file)) => {
+            lock_exclusive(file).map_err(|e| MmregError::LockAcquire {
+                details: e.to_string(),
+            })?;
+            Ok(LockGuard::Device(file))
+        }
+        None => lock_page_in(lock_dir(), address).map(LockGuard::Page),
+    }
 }
 
 pub(crate) fn lock_page_in(dir: &Path, address: u64) -> Result<File, MmregError> {
@@ -28,7 +74,7 @@ pub(crate) fn lock_page_in(dir: &Path, address: u64) -> Result<File, MmregError>
         lock_path: path,
         details: e.to_string(),
     })?;
-    file.lock().map_err(|e| MmregError::LockAcquire {
+    lock_exclusive(&file).map_err(|e| MmregError::LockAcquire {
         details: e.to_string(),
     })?;
     Ok(file)
@@ -71,7 +117,7 @@ fn lock_dir() -> &'static Path {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -112,6 +158,42 @@ mod tests {
         // A different page is a different lock: both can be held at once.
         let _a = lock_page_in(&dir, 0x5000_0000).unwrap();
         let _b = lock_page_in(&dir, 0x5000_0000 + page).unwrap();
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_device_lock_excludes_other_opens_and_unlocks_on_drop() {
+        let dir = crate::test_dir("device_lock");
+        let dev = dir.join("uio0");
+        fs::write(&dev, b"").unwrap();
+        let path = dev.to_str().unwrap().to_string();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..3)
+            .map(|_| {
+                let (path, active, max_seen) = (path.clone(), active.clone(), max_seen.clone());
+                std::thread::spawn(move || {
+                    let device = DeviceLock::open(&path).unwrap();
+                    for _ in 0..3 {
+                        let _guard = lock(Some(&device), 0).unwrap();
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_seen.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(5));
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            DeviceLock::open("/nonexistent/uio9").err().unwrap().code(),
+            "E_LOCK_OPEN"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

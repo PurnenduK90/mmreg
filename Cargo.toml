@@ -1,8 +1,8 @@
 [package]
 name = "mmreg"
 version = "1.0.0"
-edition = "2024"
-rust-version = "1.89"
+edition = "2021"
+rust-version = "1.75"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
 description = "Safe, concurrent 32-bit memory-mapped IO register access for Rust. Library and CLI for embedded and PC (linux) platforms."
 license = "MIT"
@@ -15,6 +15,8 @@ categories = ["embedded", "hardware-support"]
 default = ["profile"]
 # TOML safety-profile files (`SafetyProfile::parse`, `--validate`); about 170 KB of the binary.
 profile = ["dep:serde", "dep:toml"]
+# Raw /dev/mem access for addresses no UIO region covers: debug and bring-up builds only.
+debug = []
 
 [dependencies]
 libc = "0.2"

@@ -53,6 +53,11 @@ Wrote 0x00000064 to 0x40000000
 `sudo` is needed for `/dev/mem` and to see real addresses in `/proc/iomem`; it is not needed for a
 UIO device your user may open.
 
+An address inside a UIO device's region works with any build. Any other address needs an `mmreg`
+built with the `debug` feature (development images, prebuilt binaries); other builds refuse it with
+`[E_DEBUG_DISABLED]` before opening anything. The same applies to the register reads of a safety
+profile.
+
 ### Safety Profile (`--validate <profile.toml>`)
 A profile lists registers that must hold expected values before the target is touched, such as
 clock, reset or isolation bits on always-on system-controller registers:

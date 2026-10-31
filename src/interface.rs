@@ -1,12 +1,12 @@
 use crate::error::MmregError;
-use crate::lock::lock_page;
-use crate::memcheck::{RuntimePmGuard, resolve};
+use crate::lock::{lock, DeviceLock};
+use crate::memcheck::{resolve, RuntimePmGuard};
 use crate::memregs::{MapperType, MemoryMapper, OsMapper};
 use crate::register::Register;
 use crate::validation::SafetyProfile;
 
-/// A peripheral register bank: validated mapping, bounds/alignment enforcement and a per-page
-/// inter-process lock around every access.
+/// A peripheral register bank: validated mapping, bounds/alignment enforcement and an
+/// inter-process lock around every access (see the lock protocol in the developer docs).
 pub struct Interface {
     name: String,
     base_address: u64,
@@ -17,6 +17,7 @@ pub struct Interface {
     safety_profile: Option<SafetyProfile>,
     mapper: Option<Box<dyn MemoryMapper>>,
     custom_mapper: bool,
+    device_lock: Option<DeviceLock>,
     pm_guard: Option<RuntimePmGuard>,
 }
 
@@ -42,6 +43,7 @@ impl Interface {
             safety_profile: None,
             mapper: None,
             custom_mapper: false,
+            device_lock: None,
             pm_guard: None,
         }
     }
@@ -126,14 +128,14 @@ impl Interface {
 
     /// Checks that the base is 4-byte aligned and every register lies aligned inside `size`.
     fn validate_layout(&self) -> Result<(), MmregError> {
-        if !self.base_address.is_multiple_of(4) {
+        if self.base_address % 4 != 0 {
             return Err(MmregError::UnalignedAccess {
                 address: self.base_address,
                 offset: 0,
             });
         }
         for reg in &self.registers {
-            if !reg.offset.is_multiple_of(4) {
+            if reg.offset % 4 != 0 {
                 return Err(MmregError::UnalignedAccess {
                     address: self.base_address,
                     offset: reg.offset,
@@ -141,7 +143,7 @@ impl Interface {
             }
             if (reg.offset as usize)
                 .checked_add(4)
-                .is_none_or(|end| end > self.size)
+                .map_or(true, |end| end > self.size)
             {
                 return Err(MmregError::OutOfBoundsAccess {
                     register_name: reg.name.clone(),
@@ -158,7 +160,7 @@ impl Interface {
     /// `SafetyProfile`, and, unless forced, blueprint validation and hardware pre-flight.
     ///
     /// Mapping once and then accessing many registers avoids repeating these checks; each access
-    /// still takes its page lock on its own.
+    /// still takes its lock on its own.
     pub fn map(&mut self) -> Result<(), MmregError> {
         if self.is_mapped() {
             return Ok(());
@@ -173,10 +175,15 @@ impl Interface {
             MapperType::Auto => target.mapper,
             explicit => explicit.clone(),
         };
-        // UIO keeps the device runtime-active while open; /dev/mem needs the guard.
-        let pm_guard = match kind {
-            MapperType::DevMem => target.owner.as_deref().and_then(RuntimePmGuard::acquire),
-            _ => None,
+        // UIO keeps the device runtime-active while open and is locked through its device file;
+        // /dev/mem (debug builds) needs the runtime PM guard and page lock files.
+        let (device_lock, pm_guard) = match &kind {
+            MapperType::Uio { device_path, .. } => (Some(DeviceLock::open(device_path)?), None),
+            MapperType::DevMem if cfg!(feature = "debug") => (
+                None,
+                target.owner.as_deref().and_then(RuntimePmGuard::acquire),
+            ),
+            _ => (None, None),
         };
 
         if !self.custom_mapper {
@@ -185,6 +192,7 @@ impl Interface {
         self.mapper
             .get_or_insert_with(|| Box::new(OsMapper::new(kind)))
             .map(self.base_address, self.size)?;
+        self.device_lock = device_lock;
         self.pm_guard = pm_guard;
         Ok(())
     }
@@ -194,6 +202,7 @@ impl Interface {
         if let Some(mapper) = &mut self.mapper {
             mapper.unmap();
         }
+        self.device_lock = None;
         self.pm_guard = None;
     }
 
@@ -231,8 +240,8 @@ impl Interface {
         }
     }
 
-    /// Runs `op` on register `idx` under its page lock, mapping and unmapping around it when the
-    /// window is not already mapped.
+    /// Runs `op` on register `idx` under its lock, mapping and unmapping around it when the window
+    /// is not already mapped.
     fn access<T>(
         &mut self,
         idx: usize,
@@ -241,7 +250,8 @@ impl Interface {
         let transient = !self.is_mapped();
         self.map()?;
         let reg = &mut self.registers[idx];
-        let result = lock_page(self.base_address + u64::from(reg.offset)).map(|_lock| {
+        let address = self.base_address + u64::from(reg.offset);
+        let result = lock(self.device_lock.as_ref(), address).map(|_guard| {
             let mapper = self.mapper.as_deref().expect("map() installs a mapper");
             op(reg, mapper)
         });
@@ -269,7 +279,7 @@ impl Interface {
         self.access(idx, |reg, m| (reg.read(m) & mask) >> lsb)
     }
 
-    /// Writes a subregister (bitfield) by read-modify-write under one page lock. Bits of `value`
+    /// Writes a subregister (bitfield) by read-modify-write under one lock. Bits of `value`
     /// above the field width are ignored.
     pub fn write_subregister(
         &mut self,
@@ -300,6 +310,7 @@ impl Drop for Interface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memregs::Width;
     use crate::register::SubRegister;
     use std::cell::UnsafeCell;
 
@@ -331,11 +342,13 @@ mod tests {
         fn is_mapped(&self) -> bool {
             self.mapped
         }
-        fn read_u32(&self, offset: u32) -> u32 {
-            unsafe { *self.storage[offset as usize / 4].get() }
+        fn read(&self, offset: u32, width: Width) -> u64 {
+            assert_eq!(width, Width::U32);
+            u64::from(unsafe { *self.storage[offset as usize / 4].get() })
         }
-        fn write_u32(&self, offset: u32, value: u32) {
-            unsafe { *self.storage[offset as usize / 4].get() = value }
+        fn write(&self, offset: u32, width: Width, value: u64) {
+            assert_eq!(width, Width::U32);
+            unsafe { *self.storage[offset as usize / 4].get() = value as u32 }
         }
     }
 
@@ -464,12 +477,16 @@ mod tests {
     }
 
     #[test]
-    fn test_devmem_without_permission_fails_cleanly() {
+    fn test_devmem_fails_cleanly_without_permission_or_debug() {
         let mut iface = Interface::new("dev", 0x4000_0000, 16, vec![])
             .with_force(true)
             .with_mapper_type(MapperType::DevMem);
         let code = iface.map().unwrap_err().code();
-        assert!(code == "E_DEVMEM_OPEN" || code == "E_DEVMEM_MMAP", "{code}");
+        if cfg!(feature = "debug") {
+            assert!(code == "E_DEVMEM_OPEN" || code == "E_DEVMEM_MMAP", "{code}");
+        } else {
+            assert_eq!(code, "E_DEBUG_DISABLED");
+        }
         assert!(!iface.is_mapped());
     }
 }

@@ -2,13 +2,38 @@
 
 use crate::error::MmregError;
 use crate::memcheck::UioMap;
-use crate::mmio::{Mapping, open_device, page_size};
+use crate::mmio::{open_device, page_size, Mapping};
 use std::path::Path;
+
+/// Width of one register access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Width {
+    /// 8 bits
+    U8,
+    /// 16 bits
+    U16,
+    /// 32 bits
+    U32,
+    /// 64 bits (two bus accesses on 32-bit buses)
+    U64,
+}
+
+impl Width {
+    /// Size of the access in bytes.
+    pub fn bytes(self) -> usize {
+        match self {
+            Width::U8 => 1,
+            Width::U16 => 2,
+            Width::U32 => 4,
+            Width::U64 => 8,
+        }
+    }
+}
 
 /// A way to reach physical memory (`/dev/mem`, UIO, or a custom/mock backend).
 ///
-/// `Interface` only calls `read_u32`/`write_u32` while mapped, with a 4-byte-aligned `offset`
-/// that lies inside the mapped `size`.
+/// Callers only read and write while mapped, at an `offset` aligned to the access width and inside
+/// the mapped `size`. Values are zero-extended to `u64`; writes use the low `width` bits.
 pub trait MemoryMapper: Send {
     /// Maps `size` bytes at physical `address`, replacing any previous mapping.
     fn map(&mut self, address: u64, size: usize) -> Result<(), MmregError>;
@@ -19,20 +44,21 @@ pub trait MemoryMapper: Send {
     /// Returns true while a mapping is held.
     fn is_mapped(&self) -> bool;
 
-    /// Reads 32 bits at `offset` bytes past the mapped address.
-    fn read_u32(&self, offset: u32) -> u32;
+    /// Reads `width` bits at `offset` bytes past the mapped address.
+    fn read(&self, offset: u32, width: Width) -> u64;
 
-    /// Writes 32 bits at `offset` bytes past the mapped address.
-    fn write_u32(&self, offset: u32, value: u32);
+    /// Writes the low `width` bits of `value` at `offset` bytes past the mapped address.
+    fn write(&self, offset: u32, width: Width, value: u64);
 }
 
 /// Backend used to reach a physical address.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MapperType {
     /// Use the UIO region that covers the address when there is one, `/dev/mem` otherwise.
     #[default]
     Auto,
-    /// Use `/dev/mem`.
+    /// Use `/dev/mem`; needs the `debug` feature (`[E_DEBUG_DISABLED]` without it).
     DevMem,
     /// Use region `region_index` of a UIO device; its physical window is read from
     /// `/sys/class/uio/<device>/maps/map<region_index>/{addr,size}`.
@@ -89,18 +115,25 @@ impl MemoryMapper for OsMapper {
     }
 
     #[inline]
-    fn read_u32(&self, offset: u32) -> u32 {
-        self.mapping.as_ref().map_or(0, |m| m.read_u32(offset))
+    fn read(&self, offset: u32, width: Width) -> u64 {
+        self.mapping.as_ref().map_or(0, |m| m.read(offset, width))
     }
 
     #[inline]
-    fn write_u32(&self, offset: u32, value: u32) {
+    fn write(&self, offset: u32, width: Width, value: u64) {
         if let Some(m) = &self.mapping {
-            m.write_u32(offset, value);
+            m.write(offset, width, value);
         }
     }
 }
 
+/// Without the `debug` feature, `/dev/mem` is never opened.
+#[cfg(not(feature = "debug"))]
+fn map_devmem(address: u64, _size: usize) -> Result<Mapping, MmregError> {
+    Err(MmregError::DebugDisabled { address })
+}
+
+#[cfg(feature = "debug")]
 fn map_devmem(address: u64, size: usize) -> Result<Mapping, MmregError> {
     let page_base = address & !(page_size() - 1);
     let file = open_device("/dev/mem", true).map_err(|e| MmregError::DevMemOpen {
@@ -187,8 +220,9 @@ mod tests {
     fn test_unmapped_os_mapper_is_inert() {
         let mut mapper = OsMapper::new(MapperType::DevMem);
         assert!(!mapper.is_mapped());
-        assert_eq!(mapper.read_u32(0), 0);
-        mapper.write_u32(0, 0xDEAD_BEEF);
+        assert_eq!(mapper.read(0, Width::U32), 0);
+        mapper.write(0, Width::U32, 0xDEAD_BEEF);
+        assert_eq!(Width::U64.bytes(), 8);
         mapper.unmap();
 
         let mut uio = OsMapper::new(MapperType::Uio {

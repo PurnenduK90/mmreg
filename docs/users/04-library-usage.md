@@ -85,8 +85,8 @@ fn main() -> Result<(), MmregError> {
   After `map()`, accesses reuse the mapping until `unmap()` or drop; `map()` on a mapped
   `Interface` does nothing.
 - **Locking**: each access, and each `write_subregister` read-modify-write, holds an inter-process
-  lock on the register's physical page. Locks are not held between calls, so a sequence of calls is
-  not atomic as a whole.
+  lock: `flock` on `/dev/uioN` for UIO devices, a lock file for the register's physical page with
+  `/dev/mem`. Locks are not held between calls, so a sequence of calls is not atomic as a whole.
 - **Unknown names** fail before any hardware access (`[E_REG_NOT_FOUND]`, `[E_SUBREG_NOT_FOUND]`,
   with the available names in the message).
 
@@ -108,7 +108,7 @@ let uio_iface = Interface::new("dma", 0xA000_0000, 0x1000, vec![Register::new("c
         region_index: 0,
     });
 
-// Always /dev/mem
+// Always /dev/mem: needs the `debug` feature, [E_DEBUG_DISABLED] otherwise
 let devmem_iface = Interface::new("gpio", 0x4000_0000, 0x1000, vec![Register::new("data", 0, vec![])])
     .with_mapper_type(MapperType::DevMem);
 ```

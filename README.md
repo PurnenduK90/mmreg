@@ -3,16 +3,17 @@
 [![Crates.io](https://img.shields.io/crates/v/mmreg.svg)](https://crates.io/crates/mmreg)
 [![Downloads](https://img.shields.io/crates/d/mmreg.svg)](https://crates.io/crates/mmreg)
 [![License](https://img.shields.io/crates/l/mmreg.svg)](LICENSE.txt)
-[![Rust](https://img.shields.io/badge/rust-1.89%2B-blue.svg?maxAge=3600)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-blue.svg?maxAge=3600)](https://www.rust-lang.org/)
 [![Build Status](https://github.com/PurnenduK90/mmreg/workflows/CI/badge.svg)](https://github.com/PurnenduK90/mmreg/actions)
 
 A Rust library and CLI for safe, concurrent access to 32-bit memory-mapped IO registers: a
 `devmem2` replacement that refuses accesses likely to hang the bus instead of performing them.
 
 ## Features
-- **UIO first, `/dev/mem` fallback**: uses the `/dev/uioN` region covering an address when there
-  is one; `/dev/mem` is opened `O_SYNC` (uncached), and addresses at or above 2 GiB work on 32-bit
-  ARM (64-bit `mmap` offset).
+- **UIO first, `/dev/mem` only in debug builds**: uses the `/dev/uioN` region covering an
+  address. Other addresses need the `debug` feature, so release builds cannot reach arbitrary
+  physical memory (`[E_DEBUG_DISABLED]`). `/dev/mem` is opened `O_SYNC` (uncached), and addresses
+  at or above 2 GiB work on 32-bit ARM (64-bit `mmap` offset).
 - **Blueprint validation**: the range must be known to the kernel (`/sys/class/uio`, Device Tree
   `of_node/reg`, `/proc/iomem`) and must not be System RAM, kernel memory, reserved or ACPI memory.
 - **Zombie hardware pre-flight**: the owning device must have DT `status = "okay"`, be runtime-PM
@@ -22,7 +23,9 @@ A Rust library and CLI for safe, concurrent access to 32-bit memory-mapped IO re
 - **Safety profiles** (`--validate <profile.toml>`): extra register checks (clock, reset,
   isolation bits) that must pass before the target is touched.
 - **Alignment and bounds**: every access is 4-byte aligned and inside the declared window.
-- **Concurrency**: a per-page inter-process lock around every access and read-modify-write.
+- **Concurrency**: an inter-process lock around every access and read-modify-write: `flock` on
+  `/dev/uioN` for UIO devices (shared with C programs that lock the device the same way), a
+  per-page lock file for `/dev/mem`.
 - **Structured errors**: every failure is a `MmregError` with a stable `[E_*]` code and a
   remediation hint.
 
@@ -35,7 +38,8 @@ mmreg --validate zynqmp_gem3.toml read 0xFF0E_0000
 mmreg --force read 0x4000_0000           # skip blueprint and pre-flight checks
 ```
 Numbers are hexadecimal with or without `0x` (underscores allowed); `0d` or `--dec` selects
-decimal. See [CLI Usage](docs/users/03-cli-usage.md).
+decimal. Addresses outside UIO regions need a `debug` build (`cargo install mmreg --features
+debug`; the prebuilt binaries have it). See [CLI Usage](docs/users/03-cli-usage.md).
 
 ## Library
 ```rust
@@ -68,7 +72,7 @@ default), which adds `toml` and `serde`. Release binaries (x86_64 Linux, strippe
 | `cargo build --release --no-default-features` (no `--validate`) | ~360 KB |
 
 Prebuilt targets ([`targets.txt`](targets.txt)): `x86_64`, `aarch64`, `armv7` and `riscv64gc`
-Linux, with static musl builds of the embedded ones that run on any rootfs.
+Linux, with static musl builds for `aarch64` and `armv7` that run on any rootfs.
 
 ## Documentation
 - [User guide](docs/users/README.md): installation, CLI, library, safety checks, error codes

@@ -12,15 +12,15 @@ src/
 ├── interface.rs   # Interface: layout checks, map/unmap lifecycle, locked register access
 ├── register.rs    # Register and SubRegister (bitfield) definitions
 ├── memregs.rs     # MemoryMapper trait, MapperType, OsMapper (/dev/mem and UIO windows)
-├── mmio.rs        # Page size, device open, mmap/munmap (Mapping), volatile 32-bit access
+├── mmio.rs        # Page size, device open, flock, mmap/munmap (Mapping), volatile 8–64-bit access
 ├── memcheck.rs    # Blueprint lookup (UIO, Device Tree, /proc/iomem), pre-flight, runtime PM guard
-├── lock.rs        # Per-page inter-process lock files
+├── lock.rs        # Lock protocol: flock on /dev/uioN, or per-page lock files for /dev/mem
 ├── validation.rs  # SafetyProfile / ValidationCheck; TOML parsing behind the `profile` feature
 └── parse.rs       # Integer parsing for CLI, profiles and sysfs
 ```
 
 Dependencies: `libc` (mmap, sysconf); `toml` and `serde` only with the `profile` feature. Locking
-uses `std::fs::File::lock`.
+uses `flock(2)` through `mmio.rs`, the only module with `unsafe`.
 
 ---
 
@@ -32,7 +32,7 @@ sequenceDiagram
     participant Iface as Interface
     participant Check as memcheck::resolve
     participant Mapper as OsMapper (UIO / DevMem)
-    participant Lock as lock_page (/run/lock/mmreg)
+    participant Lock as lock (/dev/uioN or page file)
 
     Caller->>Iface: read_register("ctrl")
     Iface->>Iface: look up "ctrl" (fails before any I/O)
@@ -42,9 +42,9 @@ sequenceDiagram
         Check-->>Iface: Target { Uio | DevMem, owner }
         Iface->>Mapper: map(base, size)
     end
-    Iface->>Lock: lock page of base + offset
-    Iface->>Mapper: read_u32(offset) (volatile)
-    Iface->>Lock: unlock (close)
+    Iface->>Lock: flock device, or page of base + offset
+    Iface->>Mapper: read(offset, U32) (volatile)
+    Iface->>Lock: unlock
     alt Mapped only for this call
         Iface->>Mapper: unmap()
     end
@@ -55,11 +55,17 @@ sequenceDiagram
 
 ## Concurrency & Lifecycle
 
-1. **Per-page locks** (`lock.rs`): every access, and every `write_subregister` read-modify-write,
-   holds an exclusive `flock` on `<lock dir>/<page base>-<page end>.lock` for the page holding the
-   register. An aligned 32-bit register never spans two pages, so one lock per access suffices and
-   no lock ordering is needed. Locks are not held between calls, so unrelated `Interface`s (in one
-   process or many) never deadlock and only users of the same page wait for each other.
+1. **Lock protocol** (`lock.rs`, stable since 1.0.0 so other programs can follow it): every access,
+   and every `write_subregister` read-modify-write, holds an exclusive `flock`:
+   - **UIO:** on an open file of `/dev/uioN` (opened read-only at `map()`, kept until `unmap()`).
+     A C program that takes `flock(LOCK_EX)` on its own `/dev/uioN` descriptor excludes and is
+     excluded by mmreg.
+   - **`/dev/mem` and custom mappers:** on `<lock dir>/<page base>-<page end>.lock` for the page
+     holding the register. An aligned register never spans two pages, so one lock per access
+     suffices and no lock ordering is needed.
+
+   `flock` belongs to an open file, so two `Interface`s in one process exclude each other too.
+   Locks are not held between calls, so unrelated `Interface`s never deadlock.
 2. **Lock files are never deleted**: unlinking a lock file while another process waits on it lets
    two processes lock different inodes of "the same" file. Closing the file (or process exit)
    releases the lock. Lock files are opened read-only, which `flock` allows whoever created them;

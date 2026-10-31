@@ -12,3 +12,5 @@ Documentation for the `mmreg` CLI and Rust library.
 5. **[Safety & Hardware Pre-Flight](05-safety-and-preflight.md)**: blueprint validation, zombie
    hardware checks, and the safety-profile format.
 6. **[Troubleshooting & Error Reference](06-troubleshooting.md)**: every `[E_*]` code and its fix.
+7. **[Block Files](07-block-files.md)**: the `mmreg-block/1` JSON files the Python package uses for
+   access by name in debugging and experiments (draft, planned for 1.3).

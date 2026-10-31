@@ -171,33 +171,37 @@ fn parse_iomem<R: BufRead>(mut reader: R, target: u64, size: usize) -> Result<bo
     let mut line = String::with_capacity(128);
 
     while reader.read_line(&mut line).unwrap_or(0) > 0 {
-        if let Some((range, resource)) = line.split_once(" : ")
-            && let Some((start, end)) = range.trim().split_once('-')
-            && let (Ok(start), Ok(end)) = (
-                u64::from_str_radix(start, 16),
-                u64::from_str_radix(end, 16),
-            )
+        match iomem_entry(&line) {
             // Non-root readers see every range as 00000000-00000000.
-            && end != 0
-            && target >= start
-            && last <= end
-        {
-            let resource = resource.trim();
-            if RESTRICTED_IOMEM
-                .iter()
-                .any(|p| starts_with_ignore_case(resource, p))
-            {
-                return Err(MmregError::BlueprintSystemRam {
-                    address: target,
-                    size,
-                    resource: resource.to_string(),
-                });
+            Some((start, end, resource)) if end != 0 && target >= start && last <= end => {
+                if RESTRICTED_IOMEM
+                    .iter()
+                    .any(|p| starts_with_ignore_case(resource, p))
+                {
+                    return Err(MmregError::BlueprintSystemRam {
+                        address: target,
+                        size,
+                        resource: resource.to_string(),
+                    });
+                }
+                listed = true;
             }
-            listed = true;
+            _ => {}
         }
         line.clear();
     }
     Ok(listed)
+}
+
+/// Splits a `/proc/iomem` line `start-end : resource` into `(start, end, resource)`.
+fn iomem_entry(line: &str) -> Option<(u64, u64, &str)> {
+    let (range, resource) = line.split_once(" : ")?;
+    let (start, end) = range.trim().split_once('-')?;
+    Some((
+        u64::from_str_radix(start, 16).ok()?,
+        u64::from_str_radix(end, 16).ok()?,
+        resource.trim(),
+    ))
 }
 
 // --- Device Tree `reg` ---
@@ -210,11 +214,9 @@ fn read_dt_cells(path: &Path) -> Option<usize> {
 }
 
 fn read_be_cells(bytes: &[u8]) -> u64 {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .fold(0, |acc, &w| (acc << 32) | u64::from(u32::from_be_bytes(w)))
+    bytes.chunks_exact(4).fold(0, |acc, w| {
+        (acc << 32) | u64::from(u32::from_be_bytes([w[0], w[1], w[2], w[3]]))
+    })
 }
 
 /// True when a raw Device Tree `reg` property has an `(address, size)` entry covering
@@ -228,7 +230,7 @@ fn reg_covers(buf: &[u8], target: u64, size: usize, cells: Option<(usize, usize)
     };
     layouts.iter().any(|&(addr_cells, size_cells)| {
         let entry = (addr_cells + size_cells) * 4;
-        buf.len().is_multiple_of(entry)
+        buf.len() % entry == 0
             && buf.chunks_exact(entry).any(|e| {
                 let start = read_be_cells(&e[..addr_cells * 4]);
                 let len = read_be_cells(&e[addr_cells * 4..]);
@@ -301,10 +303,14 @@ fn is_fpga_backed_device(dev_path: &Path) -> bool {
         })
 }
 
-fn is_runtime_pm_bad(pm: &str) -> bool {
+/// The runtime PM status at `pm_path` when it is `suspended`, `suspending` or `error`.
+fn bad_runtime_pm(pm_path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(pm_path).ok()?;
+    let status = raw.trim();
     ["suspended", "suspending", "error"]
         .iter()
-        .any(|bad| pm.eq_ignore_ascii_case(bad))
+        .any(|bad| status.eq_ignore_ascii_case(bad))
+        .then(|| status.to_string())
 }
 
 /// Runs the Zombie Hardware Pre-Flight checks on a sysfs device.
@@ -331,12 +337,10 @@ fn preflight_check_device(
 
     // 2. Runtime power management
     let pm_path = dev_path.join("power/runtime_status");
-    if let Ok(raw) = fs::read_to_string(&pm_path)
-        && is_runtime_pm_bad(raw.trim())
-    {
+    if let Some(status) = bad_runtime_pm(&pm_path) {
         return Err(MmregError::ZombieRuntimePm {
             device_name: dev_name.to_string(),
-            status: raw.trim().to_string(),
+            status,
             pm_path,
             device_path: dev_path.to_path_buf(),
         });
@@ -353,13 +357,11 @@ fn preflight_check_device(
             let supplier = link.join("supplier");
             let root = if supplier.exists() { supplier } else { link };
             let pm_path = root.join("power/runtime_status");
-            if let Ok(raw) = fs::read_to_string(&pm_path)
-                && is_runtime_pm_bad(raw.trim())
-            {
+            if let Some(status) = bad_runtime_pm(&pm_path) {
                 return Err(MmregError::ZombieSupplierPm {
                     device_name: dev_name.to_string(),
                     supplier_name: name.to_string(),
-                    status: raw.trim().to_string(),
+                    status,
                     supplier_pm_path: pm_path,
                 });
             }
@@ -492,9 +494,7 @@ fn check_clk_summary<R: BufRead>(
             if dt_clock_names.iter().any(|c| c == tokens[0]) || tokens.contains(&dev_name) {
                 evaluate_clock_state(dev_name, &clock, row, summary_path)?;
             }
-        } else if let Some(row) = state
-            && tokens.contains(&dev_name)
-        {
+        } else if let Some(row) = state.filter(|_| tokens.contains(&dev_name)) {
             evaluate_clock_state(dev_name, &clock, row, summary_path)?;
         }
         line.clear();
@@ -509,13 +509,14 @@ fn check_fpga_manager_operating(dev_name: &str, fpga_mgr_root: &Path) -> Result<
     };
     for entry in entries.flatten() {
         let state_path = entry.path().join("state");
-        if let Ok(raw) = fs::read_to_string(&state_path)
-            && !raw.trim().eq_ignore_ascii_case("operating")
-        {
+        let state = fs::read_to_string(&state_path)
+            .ok()
+            .filter(|s| !s.trim().eq_ignore_ascii_case("operating"));
+        if let Some(state) = state {
             return Err(MmregError::ZombieFpgaState {
                 device_name: dev_name.to_string(),
                 manager_name: entry.file_name().to_string_lossy().into_owned(),
-                state: raw.trim().to_string(),
+                state: state.trim().to_string(),
                 state_path,
             });
         }
@@ -645,10 +646,9 @@ a0000000-a000ffff : axi_gpio@a0000000
 
         assert!(is_fpga_backed_device(&pl_dev));
         let err = preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("FPGA manager 'fpga0' is in state 'power off'")
-        );
+        assert!(err
+            .to_string()
+            .contains("FPGA manager 'fpga0' is in state 'power off'"));
 
         fs::write(fpga_root.join("fpga0/state"), "operating\n").unwrap();
         assert!(preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root).is_ok());

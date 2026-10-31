@@ -1,4 +1,4 @@
-use crate::memregs::MemoryMapper;
+use crate::memregs::{MemoryMapper, Width};
 
 /// A 32-bit memory-mapped register with optional subregisters (bitfields).
 ///
@@ -7,6 +7,7 @@ use crate::memregs::MemoryMapper;
 /// use mmreg::{Register, SubRegister};
 /// let reg = Register::new("status", 0x4, vec![SubRegister::new("ready", 0, 0)]);
 /// ```
+#[non_exhaustive]
 pub struct Register {
     /// Name of the register
     pub name: String,
@@ -27,6 +28,7 @@ pub struct Register {
 /// assert_eq!(mode.mask(), 0xF0);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SubRegister {
     /// Name of the subregister
     pub name: String,
@@ -50,14 +52,14 @@ impl Register {
     /// Reads the register from hardware into `raw`.
     #[inline]
     pub(crate) fn read(&mut self, mapper: &dyn MemoryMapper) -> u32 {
-        self.raw = mapper.read_u32(self.offset);
+        self.raw = mapper.read(self.offset, Width::U32) as u32;
         self.raw
     }
 
     /// Writes `value` to hardware and records it in `raw`.
     #[inline]
     pub(crate) fn write(&mut self, mapper: &dyn MemoryMapper, value: u32) {
-        mapper.write_u32(self.offset, value);
+        mapper.write(self.offset, Width::U32, u64::from(value));
         self.raw = value;
     }
 

@@ -97,22 +97,31 @@ fn open_lock_file(path: &Path) -> io::Result<File> {
     }
 }
 
-/// `/run/lock/mmreg`, else `/tmp/mmreg-lock`, else `<temp dir>/mmreg-lock`; created
-/// world-writable and sticky so every user shares the same lock files.
+/// `/run/lock/mmreg` when `/run/lock` exists, else `/tmp/mmreg-lock` (or `<temp dir>/mmreg-lock`);
+/// created world-writable and sticky (`1777`) so root and non-root always use the same directory.
 fn lock_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         #[cfg(unix)]
-        for dir in ["/run/lock/mmreg", "/tmp/mmreg-lock"] {
+        let dir = {
+            let dir = if Path::new("/run/lock").is_dir() {
+                "/run/lock/mmreg"
+            } else {
+                "/tmp/mmreg-lock"
+            };
             if fs::create_dir_all(dir).is_ok() {
                 use std::os::unix::fs::PermissionsExt;
                 // Fails unless we created it; whoever did set the same mode.
                 let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o1777));
-                return PathBuf::from(dir);
             }
-        }
-        let dir = std::env::temp_dir().join("mmreg-lock");
-        let _ = fs::create_dir_all(&dir);
+            PathBuf::from(dir)
+        };
+        #[cfg(not(unix))]
+        let dir = {
+            let dir = std::env::temp_dir().join("mmreg-lock");
+            let _ = fs::create_dir_all(&dir);
+            dir
+        };
         dir
     })
 }

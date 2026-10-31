@@ -79,7 +79,7 @@ for it.
 |---|---|---|
 | *(core)* | `Device` over UIO, `Interface`, locking, interrupts, blueprint and pre-flight checks | always |
 | `debug` | `/dev/mem` backend for addresses no UIO device covers (debug and bring-up builds; since 1.0.0) | off |
-| `profile` | TOML safety profiles (since 1.0.0) | on |
+| `profile` | JSON safety profiles (since 1.0.0) | on |
 | `capi` | C ABI (`libmmreg.a`, `libmmreg.so`, `mmreg.h`); the Python binding uses it | off |
 
 Block files add no feature: they are read by the Python package (standard-library `json`), not by
@@ -102,8 +102,9 @@ profile checks read registers by physical address too, so outside UIO regions th
 - **`/dev/mem` access (`debug`) and custom mappers:** per-page lock files (`lock.rs`).
 - **Within a process:** `flock` does not exclude threads sharing one open file and does exclude two
   handles of one process on the same device. So a `Device` serialises its own threads with a mutex,
-  handles to the same device in one process share one open file (a per-process registry), and the
-  sequence guard is reentrant (mutex plus depth count).
+  handles to the same device in one process share one open file (a per-process registry keyed by
+  `(st_dev, st_ino)` so symlinks and relative paths share one descriptor, plus page lock files for
+  `/dev/mem`), and the sequence guard is reentrant (mutex plus depth count).
 - **Sequences:** a guard held across several accesses (read-modify-write chains, multi-word reads,
   FIFO drains).
 
@@ -130,15 +131,7 @@ profile checks read registers by physical address too, so outside UIO regions th
 
 ## 1.0.x — fixes (patch releases)
 
-- [ ] **Leaf-only `/proc/iomem` match.** A range inside a bus window (`PCI Bus 0000:00`, `soc`,
-  `amba`) passes the blueprint even when no device claims it. Accept only when the innermost
-  (most indented) resource covering the range is not itself a parent of other resources, or when a
-  UIO / Device Tree owner exists.
-- [ ] **One lock directory for everyone.** A user who cannot create `/run/lock/mmreg` falls back to
-  `/tmp/mmreg-lock` while root uses `/run/lock/mmreg`, and the two do not exclude each other. Either
-  refuse instead of falling back when `/run/lock` exists, or always use one directory.
-- [ ] **Docs example check.** Confirm the ZynqMP `GEM3_REF_CTRL` clock-active bit used in the
-  docs (bit 25, `0x0200_0000`) against UG1087.
+*(No open items — completed fixes moved to [changelog.md](changelog.md).)*
 
 ## 1.1 — library core (replaces `devmem`, and UIO helper libraries for Rust)
 
@@ -155,8 +148,9 @@ profile checks read registers by physical address too, so outside UIO regions th
   - `.read_only()`: `O_RDONLY` + `PROT_READ`, so read-only tools work with read permission only.
   - `read_u8/u16/u32/u64(offset)`, `write_*`, `update_u32(offset, mask, value)` (locked RMW).
   - Blueprint, pre-flight and safety-profile checks run once at open.
-- [ ] **Lock protocol within a process:** one open `/dev/uioN` per device and process (registry)
-  shared by its `Device` handles, a mutex for threads; the inter-process protocol is unchanged.
+- [ ] **Lock protocol within a process:** one open `/dev/uioN` (or `/dev/mem` page lock file) per
+   `(st_dev, st_ino)` and process (registry) shared by its `Device` handles, a mutex for threads;
+  the inter-process protocol is unchanged.
 - [ ] **Sequence guard:** `let _g = dev.lock()?;` holds the lock until dropped; reentrant.
 - [ ] **Interrupts (UIO):** `irq_unmask()`, `irq_wait(timeout) -> Option<count>` (`poll` + `read`).
   Document "clear the source, then unmask" for level-triggered sources.

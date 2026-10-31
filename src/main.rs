@@ -7,7 +7,7 @@ fn usage_text() -> &'static str {
     "Usage: mmreg [options] <read|write> <address> [value]\n\
 Options:\n  \
   -f, --force               Skip address blueprint and hardware pre-flight validation\n  \
-  -v, --validate <file>     Run a TOML Safety Profile's checks before the access\n  \
+  -v, --validate <file>     Run a JSON Safety Profile's checks before the access (may be repeated)\n  \
   -d, --dec                 Interpret unprefixed numbers as decimal instead of hexadecimal\n  \
   -h, --help                Print this help message\n\
 Commands:\n  \
@@ -17,7 +17,7 @@ Examples:\n  \
   mmreg read 0x4000_0000\n  \
   mmreg write 0x4000_0000 0xDEADBEEF\n  \
   mmreg write 0x4000_0000 0d100\n  \
-  mmreg --validate zynqmp_safety.toml read 0xA000_0000\n  \
+  mmreg --validate zynqmp_safety.json read 0xA000_0000\n  \
   mmreg --force read 0x4000_0000"
 }
 
@@ -34,7 +34,7 @@ where
 {
     let mut force_map = false;
     let mut default_radix: u32 = 16;
-    let mut validate_path: Option<&str> = None;
+    let mut validate_paths: Vec<&str> = Vec::new();
     let mut idx = 1;
 
     while let Some(arg) = args.get(idx) {
@@ -49,19 +49,30 @@ where
                         arg
                     ))
                 })?;
-                validate_path = Some(path);
+                validate_paths.push(path);
             }
             "-h" | "--help" => return Ok(usage_text().to_string()),
             a if !a.starts_with('-') => break,
-            a => return Err(usage_error(&format!("Unknown option: {}", a))),
+            a => {
+                return Err(usage_error(&format!(
+                    "[E_CLI_UNKNOWN_OPT] Unknown option: {}",
+                    a
+                )));
+            }
         }
         idx += 1;
     }
 
+    if args[idx..].iter().any(|a| a == "-h" || a == "--help") {
+        return Ok(usage_text().to_string());
+    }
+
     // Parse every operand before touching hardware (a profile's checks read registers).
     let (address_arg, value_arg) = match args.get(idx..).unwrap_or_default() {
-        [] => return Err(usage_text().to_string()),
-        [_] => return Err(usage_error("Missing address argument")),
+        [] => return Err(usage_error("[E_CLI_MISSING_CMD] Missing command")),
+        [cmd] if cmd == "read" || cmd == "write" => {
+            return Err(usage_error("[E_CLI_MISSING_ADDR] Missing address argument"));
+        }
         [cmd, addr] if cmd == "read" => (addr, None),
         [cmd, _] if cmd == "write" => {
             return Err(usage_error(
@@ -97,7 +108,7 @@ where
         })
         .transpose()?;
 
-    if let Some(path) = validate_path {
+    for path in validate_paths {
         run_profile(path, |addr| read_fn(addr, true))?;
     }
 
@@ -113,7 +124,7 @@ where
     }
 }
 
-/// Loads the TOML safety profile at `path` and runs its checks with `read`.
+/// Loads the JSON safety profile at `path` and runs its checks with `read`.
 #[cfg(feature = "profile")]
 fn run_profile(path: &str, read: impl FnMut(u64) -> Result<u32, MmregError>) -> Result<(), String> {
     mmreg::SafetyProfile::from_file(std::path::Path::new(path))
@@ -169,16 +180,19 @@ mod tests {
     #[test]
     fn test_cli_arguments() {
         assert!(run(&["mmreg", "--help"]).unwrap().contains("Usage: mmreg"));
-        assert!(run(&["mmreg"]).is_err());
+        assert!(run(&["mmreg", "read", "--help"])
+            .unwrap()
+            .contains("Usage: mmreg"));
+        assert!(run(&["mmreg"]).unwrap_err().contains("[E_CLI_MISSING_CMD]"));
         assert!(run(&["mmreg", "--bad"])
             .unwrap_err()
-            .contains("Unknown option: --bad"));
+            .contains("[E_CLI_UNKNOWN_OPT] Unknown option: --bad"));
         assert!(run(&["mmreg", "--validate"])
             .unwrap_err()
             .contains("[E_CLI_MISSING_PROFILE]"));
         assert!(run(&["mmreg", "read"])
             .unwrap_err()
-            .contains("Missing address argument"));
+            .contains("[E_CLI_MISSING_ADDR]"));
         for bad in ["0xZZZZ", "0x0x10"] {
             assert!(run(&["mmreg", "read", bad])
                 .unwrap_err()
@@ -193,6 +207,9 @@ mod tests {
         assert!(run(&["mmreg", "write", "0x4000_0000", "not_hex"])
             .unwrap_err()
             .contains("[E_CLI_INVALID_VAL]"));
+        assert!(run(&["mmreg", "erase"])
+            .unwrap_err()
+            .contains("[E_CLI_UNKNOWN_CMD]"));
         assert!(run(&["mmreg", "erase", "0x4000_0000"])
             .unwrap_err()
             .contains("[E_CLI_UNKNOWN_CMD]"));
@@ -233,10 +250,10 @@ mod tests {
     #[cfg(feature = "profile")]
     #[test]
     fn test_cli_validate_profile() {
-        let profile = std::env::temp_dir().join(format!("mmreg_cli_{}.toml", process::id()));
+        let profile = std::env::temp_dir().join(format!("mmreg_cli_{}.json", process::id()));
         std::fs::write(
             &profile,
-            "name = \"ZynqMP\"\n[[checks]]\nname = \"PCAP_DONE\"\naddr = 0xFFCA_3010\nmask = 0x4\nexpected = 0x4\n",
+            r#"{"name": "ZynqMP", "checks": [{"name": "PCAP_DONE", "addr": "0xFFCA_3010", "mask": "0x4", "expected": "0x4"}]}"#,
         )
         .unwrap();
         let path = profile.to_str().unwrap();
@@ -251,5 +268,13 @@ mod tests {
         assert!(run_cli_with(&args, no_reads, ok_write).is_err());
 
         let _ = std::fs::remove_file(&profile);
+    }
+
+    #[cfg(not(feature = "profile"))]
+    #[test]
+    fn test_cli_validate_without_profile_feature() {
+        assert!(run(&["mmreg", "-v", "p.json", "read", "0x4000_0000"])
+            .unwrap_err()
+            .contains("[E_CLI_NO_PROFILE]"));
     }
 }

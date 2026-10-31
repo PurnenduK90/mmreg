@@ -9,8 +9,8 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 
 | Code | Meaning | Remediation |
 | :--- | :--- | :--- |
-| `E_BLUEPRINT_UNMAPPED` | The range is in no UIO region, Device Tree `reg` or `/proc/iomem` entry. | 1. Run with `sudo` (non-root sees `/proc/iomem` as `00000000-00000000`). 2. Check the peripheral's Device Tree node or UIO driver is loaded. 3. Use `--force` only if you are sure the bus will answer. |
-| `E_BLUEPRINT_RAM` | The range is inside System RAM, kernel memory, a reserved or an ACPI range. | Check the peripheral's physical address; RAM is not MMIO. |
+| `E_BLUEPRINT_UNMAPPED` | The range is in no UIO region, Device Tree `reg` or leaf `/proc/iomem` entry. | 1. Run with `sudo` (non-root sees `/proc/iomem` as `00000000-00000000`). 2. Check the peripheral's Device Tree node or UIO driver is loaded. 3. Use `--force` only if you are sure the bus will answer. |
+| `E_BLUEPRINT_RAM` | The range overlaps System RAM, kernel memory, a reserved or an ACPI range. | Check the peripheral's physical address; RAM is not MMIO. For debugging DMA scatter-gather descriptors in coherent RAM/reserved carveouts, expose the carveout as a UIO map or pass `--force` with a `debug` build. |
 
 ## Hardware Pre-Flight
 
@@ -27,7 +27,7 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 | Code | Meaning | Remediation |
 | :--- | :--- | :--- |
 | `E_VALIDATION_HOOK_FAILED` | A profile check read a value that does not match `expected` under `mask`. | Satisfy the prerequisite named in the message (clock, reset, isolation). |
-| `E_VALIDATION_PROFILE_PARSE` | The profile file is unreadable or invalid (unknown key, missing key, no `[[checks]]`, number too large). | Fix the file; see the format in [Safety & Hardware Pre-Flight](05-safety-and-preflight.md#stage-3-safety-profiles---validate-profiletoml). |
+| `E_VALIDATION_PROFILE_PARSE` | The profile file is unreadable or invalid JSON (unknown key, missing key, no `"checks"`, number too large). | Fix the file; see the format in [Safety & Hardware Pre-Flight](05-safety-and-preflight.md#stage-3-safety-profiles---validate-profilejson). |
 
 ## Backends
 
@@ -46,7 +46,7 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 | :--- | :--- | :--- |
 | `E_UNALIGNED_ACCESS` | The base address or a register offset is not a multiple of 4. | Use 4-byte-aligned addresses and offsets. |
 | `E_OUT_OF_BOUNDS` | A register's `offset + 4` exceeds the `Interface` size. | Increase the size or fix the offset. |
-| `E_LOCK_OPEN` | The lock file cannot be opened: `/dev/uioN` (UIO devices) or the page lock file (`/dev/mem`). | For UIO, give the user read access to `/dev/uioN`; for `/dev/mem`, make `/run/lock/mmreg` (or `/tmp/mmreg-lock`) writable for all users (mode `1777`). |
+| `E_LOCK_OPEN` | The lock file cannot be opened: `/dev/uioN` (UIO devices) or the page lock file (`/dev/mem`). | For UIO, give the user read access to `/dev/uioN`; for `/dev/mem`, pre-create `/run/lock/mmreg` with mode `1777` (`sudo mkdir -m 1777 -p /run/lock/mmreg`) if `/run/lock` is root-only (`0755`). |
 | `E_LOCK_ACQUIRE` | `flock` on the lock file failed. | Check the filesystem supports `flock`. |
 
 ## API
@@ -62,8 +62,11 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 | Code | Meaning |
 | :--- | :--- |
 | `E_CLI_INVALID_ADDR` / `E_CLI_INVALID_VAL` | The address (64-bit) or value (32-bit) is not a valid number. |
+| `E_CLI_MISSING_CMD` | No command (`read` or `write`) given. |
+| `E_CLI_MISSING_ADDR` | `read` or `write` without an address. |
 | `E_CLI_MISSING_VAL` | `write` without a value. |
 | `E_CLI_MISSING_PROFILE` | `--validate` without a file. |
+| `E_CLI_UNKNOWN_OPT` | Unrecognized `-` / `--` option. |
 | `E_CLI_UNKNOWN_CMD` | Command other than `read` / `write`. |
 | `E_CLI_EXTRA_ARGS` | More operands than the command takes. |
 | `E_CLI_NO_PROFILE` | `--validate` on a build without the `profile` feature. |

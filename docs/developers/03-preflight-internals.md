@@ -5,15 +5,19 @@ safety profiles in [`src/validation.rs`](../../src/validation.rs).
 
 ---
 
-## 1. Entry Point: `resolve(target, size, check)`
+## 1. Entry Point: `resolve(target, size, mapper_type, check)`
 
-Returns a `Target`: the backend (`MapperType::Uio` for a covering UIO region, else `DevMem`) and the
-owning sysfs device, if found. With `check` (no `--force`):
-1. UIO region found: pre-flight its parent device (`uioN/device`, resolved) and return. A UIO region
-   is a device range by construction, so `/proc/iomem` is not consulted.
-2. Otherwise `/proc/iomem` is scanned (RAM, kernel, reserved and ACPI ranges are refused), the
-   platform device whose DT `reg` covers the range is pre-flighted, and a range with neither owner
-   nor `/proc/iomem` entry is `[E_BLUEPRINT_UNMAPPED]`.
+Returns a `Target`: the backend (`MapperType::Uio` for a covering or explicit UIO region, else
+`DevMem`) and the owning sysfs device, if found. With `check` (no `--force`):
+1. Explicit `MapperType::Uio`, or `MapperType::Auto` with a covering UIO region: pre-flight its
+   parent device (`uioN/device`, resolved, when present in sysfs) and return. A UIO region is a
+   device range by construction (and `OsMapper` still verifies `maps/mapM/{addr,size}`), so
+   `/proc/iomem` is not consulted.
+2. Otherwise `/proc/iomem` is scanned (any overlap with RAM, kernel, reserved or ACPI ranges is
+   refused; only leaf entries with no child lines count as listed MMIO, so unmapped holes inside
+   parent bus windows like `PCI Bus` or `amba` are rejected), the platform device whose DT `reg`
+   covers the range is pre-flighted, and a range with neither owner nor leaf `/proc/iomem` entry is
+   `[E_BLUEPRINT_UNMAPPED]`.
 
 Without `check`, only the lookups run (the owner is still needed for the runtime PM guard).
 
@@ -60,6 +64,7 @@ holds a runtime-PM reference.
 
 `SafetyProfile` and `ValidationCheck` are plain structs, always available, and
 `SafetyProfile::execute_with(read_fn)` runs the checks with any reader (real hardware in
-`Interface::map` and the CLI, closures in tests). With the `profile` feature they also derive
-`serde::Deserialize` with `deny_unknown_fields`; `SafetyProfile::parse` uses `toml`, and numbers go
-through `parse_u64_radix` when written as strings.
+`Interface::map` and the CLI, closures in tests). With the `profile` feature,
+`SafetyProfile::parse` parses JSON with a small built-in recursive-descent parser (no external crate
+dependencies), rejecting unknown keys except `x-*` extensions and routing string numbers through
+`parse_u64_radix`.

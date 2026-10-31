@@ -80,20 +80,24 @@ d.DEBOUNCE[3].CYCLES = 10
 
 ## Structure
 
-Names are object keys, as in SystemRDL-style JSON. Inside every object, lowercase keys from the
-tables below are properties; every other key is a child (a register, register group or field), and
-its value must be an object. A key starting with `x-` is ignored.
+Names are object keys, as in SystemRDL-style JSON. Inside a block, register group, register or
+field, every property has a **scalar** value (string, number or boolean) and a lowercase key from
+the tables below; every key whose value is a JSON **object** (`{ ... }`) is a child (a register,
+register group or field), so common hardware names such as `RESET`, `SIZE` or `MODE` never collide
+with scalar properties like `"reset": 0` or `"size": 4096`. At the file root, `"format"` and
+`"compatible"` are strings, `"enum"` is the shared enumerations object, and the one other key is
+the block. Any key starting with `x-` is ignored everywhere.
 
 | Object | Recognized by | Children |
 |---|---|---|
-| file | top level | exactly one block, keyed by its name |
-| block | the one non-property key of the file | registers and register groups |
-| register | has `at`; its children (if any) have `bits` | fields |
-| register group | has `at`; its children have `at` | registers (offsets relative to the group) |
-| field | has `bits` | none |
+| file | top level | the one non-`enum` object key is the block |
+| block | the block object of the file | registers and register groups (object values) |
+| register | object with `at`; its object children (if any) have `bits` | fields |
+| register group | object with `at`; its object children have `at` | registers (offsets relative to the group) |
+| field | object with `bits` | none |
 
-Child names match `[A-Za-z_][A-Za-z0-9_]*` and must not be a property key. Lookups are
-case-insensitive, so names must also be unique ignoring case.
+Child names match `[A-Za-z_][A-Za-z0-9_]*`. Lookups of registers and fields are case-insensitive, so
+sibling child names within the same parent must be unique ignoring case.
 
 ### File
 
@@ -175,9 +179,11 @@ These are SystemRDL's properties, and CMSIS-SVD's `access`, `modifiedWriteValues
 map onto them one-to-one, so an SVD import loses nothing. Rules the Python layer enforces:
 
 1. **Field writes write only what was asked.** Writing field F of register R:
-   - When every other field of R has no effect when written as shown above (`sw: "r"`,
-     `sw: "w"`, `woclr`, `woset`, `wot`, `wzc`, `wzs`, `wzt`), F is written **without reading R
-     first**.
+   - When every other field of R has a no-effect write value as shown above (`sw: "r"`,
+     `sw: "w"` with `singlepulse: true`, `woclr`, `woset`, `wot`, `wzc`, `wzs`, `wzt`), F is
+     written **without reading R first** (unmodeled bits are written as 0). Plain write-only fields
+     (`sw: "w"` without `singlepulse`) are not no-ops on write, so a register mixing `sw: "w"` with
+     other fields must be written as a whole register (`d.R = value`).
    - Otherwise R is read and written back as shown above, under the device lock, so `rw` and
      reserved bits keep their value and pending `woclr` bits are not cleared by accident.
    - A register with a `wclr` / `wset` field is never read-modify-written: writing one of its
@@ -194,9 +200,11 @@ generate, so production code and debug sessions behave alike.
 
 ## Wide Registers
 
-A register whose `regwidth` exceeds `accesswidth` is accessed as `regwidth / accesswidth` bus words:
-read lowest address first, written highest address last, under one lock. That is the order in which
-hardware usually latches multi-word registers.
+A register whose `regwidth` exceeds `accesswidth` is accessed as `regwidth / accesswidth` bus words
+under one lock. By default, reads access the lowest address first (latching the upper words) and
+writes access the highest address first and the lowest address last (committing the multi-word value
+when the low word is written); `"word_order": "lo_first"` on the block or register reverses the
+write order when a peripheral latches on the high word instead.
 
 ---
 
@@ -258,7 +266,7 @@ without UIO, and to attach prerequisite checks. Instances are object keys, as in
 | `uio` | one of `uio` / `at` | UIO device name; window from sysfs |
 | `uio_map` | no (`0`) | Region index of the UIO device (`maps/mapN`) |
 | `at` | one of `uio` / `at` | Physical address; access through `/dev/mem`, which needs a `debug` build of `libmmreg` |
-| `checks` | no | Prerequisites run before the block is touched: same keys as a safety profile's `[[checks]]` (`name`, `addr`, `mask`, `expected`) |
+| `checks` | no | Prerequisites run before the block is touched: same JSON objects as a safety profile's `"checks"` (`name`, `addr`, `mask`, `expected`) |
 
 An instance in a file takes precedence over a UIO device of the same name. Two files defining one
 instance name is an error (`[E_INSTANCE_DUPLICATE]`).

@@ -18,21 +18,43 @@ pub(crate) struct Target {
 
 /// Finds the UIO region or platform device owning `[target, target + size)`. With `check`, also
 /// refuses RAM and unknown ranges (Blueprint) and runs the Hardware Pre-Flight on the owner.
-pub(crate) fn resolve(target: u64, size: usize, check: bool) -> Result<Target, MmregError> {
+pub(crate) fn resolve(
+    target: u64,
+    size: usize,
+    mapper_type: &MapperType,
+    check: bool,
+) -> Result<Target, MmregError> {
     let fpga_mgr_root = Path::new("/sys/class/fpga_manager");
+    let sysfs_uio = Path::new("/sys/class/uio");
 
-    if let Some(uio) = find_uio_region(Path::new("/sys/class/uio"), Path::new("/dev"), target, size)
-    {
-        if check {
-            preflight_check_device(&uio.device_name, &uio.device_path, fpga_mgr_root)?;
+    if let MapperType::Uio { device_path, .. } = mapper_type {
+        let owner = Path::new(device_path)
+            .file_name()
+            .map(|n| sysfs_uio.join(n))
+            .filter(|p| p.exists())
+            .map(|uio_dir| uio_owner(&uio_dir));
+        if let (true, Some((name, path))) = (check, &owner) {
+            preflight_check_device(name, path, fpga_mgr_root)?;
         }
         return Ok(Target {
-            mapper: MapperType::Uio {
-                device_path: uio.dev_node,
-                region_index: uio.region_index,
-            },
-            owner: Some(uio.device_path),
+            mapper: mapper_type.clone(),
+            owner: owner.map(|(_, path)| path),
         });
+    }
+
+    if *mapper_type == MapperType::Auto {
+        if let Some(uio) = find_uio_region(sysfs_uio, Path::new("/dev"), target, size) {
+            if check {
+                preflight_check_device(&uio.device_name, &uio.device_path, fpga_mgr_root)?;
+            }
+            return Ok(Target {
+                mapper: MapperType::Uio {
+                    device_path: uio.dev_node,
+                    region_index: uio.region_index,
+                },
+                owner: Some(uio.device_path),
+            });
+        }
     }
 
     let owner = find_owning_device(Path::new("/sys/bus/platform/devices"), target, size);
@@ -90,7 +112,9 @@ impl UioMap {
 
     /// True when `[address, address + len)` lies inside the region.
     pub(crate) fn contains(&self, address: u64, len: usize) -> bool {
-        address >= self.addr
+        len > 0
+            && self.size > 0
+            && address >= self.addr
             && (address - self.addr)
                 .checked_add(len as u64)
                 .is_some_and(|end| end <= self.size)
@@ -107,6 +131,16 @@ struct UioRegion {
     device_name: String,
     /// Owning device's sysfs directory (`uioN/device`, resolved)
     device_path: PathBuf,
+}
+
+fn uio_owner(uio_dir: &Path) -> (String, PathBuf) {
+    let device_path =
+        fs::canonicalize(uio_dir.join("device")).unwrap_or_else(|_| uio_dir.to_path_buf());
+    let device_name = device_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    (device_name, device_path)
 }
 
 fn find_uio_region(
@@ -131,12 +165,7 @@ fn find_uio_region(
             if !UioMap::read(&map.path()).is_some_and(|r| r.contains(target, size)) {
                 continue;
             }
-            let device_path =
-                fs::canonicalize(uio.path().join("device")).unwrap_or_else(|_| uio.path());
-            let device_name = device_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
+            let (device_name, device_path) = uio_owner(&uio.path());
             return Some(UioRegion {
                 dev_node: dev_root
                     .join(uio.file_name())
@@ -156,8 +185,9 @@ fn find_uio_region(
 /// `/proc/iomem` resources that are memory, not MMIO (case-insensitive prefixes).
 const RESTRICTED_IOMEM: [&str; 5] = ["system ram", "kernel ", "crash kernel", "reserved", "acpi "];
 
-/// Returns whether `/proc/iomem` lists `[target, target + size)`, or an error when the range is
-/// inside RAM, kernel memory or a reserved range. An unreadable `/proc/iomem` lists nothing.
+/// Returns whether a leaf `/proc/iomem` entry covers `[target, target + size)`, or an error when
+/// the range overlaps RAM, kernel memory or a reserved range. An unreadable `/proc/iomem` lists
+/// nothing.
 fn check_iomem(target: u64, size: usize) -> Result<bool, MmregError> {
     match File::open("/proc/iomem") {
         Ok(file) => parse_iomem(BufReader::new(file), target, size),
@@ -166,29 +196,43 @@ fn check_iomem(target: u64, size: usize) -> Result<bool, MmregError> {
 }
 
 fn parse_iomem<R: BufRead>(mut reader: R, target: u64, size: usize) -> Result<bool, MmregError> {
-    let last = target.saturating_add(size.max(1) as u64 - 1);
+    let Some(last) = target.checked_add(size.max(1) as u64 - 1) else {
+        return Ok(false);
+    };
     let mut listed = false;
+    let mut pending_cover: Option<usize> = None;
     let mut line = String::with_capacity(128);
 
     while reader.read_line(&mut line).unwrap_or(0) > 0 {
-        match iomem_entry(&line) {
-            // Non-root readers see every range as 00000000-00000000.
-            Some((start, end, resource)) if end != 0 && target >= start && last <= end => {
-                if RESTRICTED_IOMEM
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        // Non-root readers see every range as 00000000-00000000.
+        if let Some((start, end, resource)) = iomem_entry(&line).filter(|&(_, end, _)| end != 0) {
+            if let Some(prev_indent) = pending_cover {
+                if indent <= prev_indent {
+                    listed = true;
+                }
+                pending_cover = None;
+            }
+            if target <= end
+                && last >= start
+                && RESTRICTED_IOMEM
                     .iter()
                     .any(|p| starts_with_ignore_case(resource, p))
-                {
-                    return Err(MmregError::BlueprintSystemRam {
-                        address: target,
-                        size,
-                        resource: resource.to_string(),
-                    });
-                }
-                listed = true;
+            {
+                return Err(MmregError::BlueprintSystemRam {
+                    address: target,
+                    size,
+                    resource: resource.to_string(),
+                });
             }
-            _ => {}
+            if target >= start && last <= end {
+                pending_cover = Some(indent);
+            }
         }
         line.clear();
+    }
+    if pending_cover.is_some() {
+        listed = true;
     }
     Ok(listed)
 }
@@ -222,7 +266,9 @@ fn read_be_cells(bytes: &[u8]) -> u64 {
 /// True when a raw Device Tree `reg` property has an `(address, size)` entry covering
 /// `[target, target + size)`. Without `cells`, every layout dividing the length is tried.
 fn reg_covers(buf: &[u8], target: u64, size: usize, cells: Option<(usize, usize)>) -> bool {
-    let end = target.saturating_add(size.max(1) as u64);
+    let Some(end) = target.checked_add(size.max(1) as u64) else {
+        return false;
+    };
     let guesses = [(2, 2), (1, 1), (2, 1)];
     let layouts = match &cells {
         Some(c) => std::slice::from_ref(c),
@@ -491,7 +537,9 @@ fn check_clk_summary<R: BufRead>(
             clock.clear();
             clock.push_str(tokens[0]);
             state = Some(row);
-            if dt_clock_names.iter().any(|c| c == tokens[0]) || tokens.contains(&dev_name) {
+            if dt_clock_names.iter().any(|c| c == tokens[0])
+                || tokens.get(3..).is_some_and(|t| t.contains(&dev_name))
+            {
                 evaluate_clock_state(dev_name, &clock, row, summary_path)?;
             }
         } else if let Some(row) = state.filter(|_| tokens.contains(&dev_name)) {
@@ -594,28 +642,34 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_iomem_rejects_ram_and_reserved() {
+    fn test_parse_iomem_rejects_ram_reserved_and_non_leaf_bus_windows() {
         let sample = "\
 00000000-7fffffff : System RAM
   00080000-015fffff : Kernel code
   01a00000-021fffff : Kernel data
 80000000-8fffffff : reserved
+90000000-bfffffff : amba
+  a0000000-a000ffff : axi_gpio@a0000000
 e0000000-e0000fff : xuartps
   e0000000-e0000fff : serial
-a0000000-a000ffff : axi_gpio@a0000000
 ";
         let parse = |target, size| parse_iomem(sample.as_bytes(), target, size);
         assert!(parse(0xA000_0000, 4).unwrap());
         assert!(parse(0xE000_0FFC, 4).unwrap());
         assert!(!parse(0xE000_0FFC, 8).unwrap());
+        // Inside the `amba` bus window, but no leaf device claims it.
         assert!(!parse(0x9000_0000, 4).unwrap());
+        assert!(!parse(0xB000_0000, 4).unwrap());
 
-        for (addr, resource) in [
-            (0x0000_1000, "System RAM"),
-            (0x0010_0000, "System RAM"),
-            (0x8000_0100, "reserved"),
+        for (addr, size, resource) in [
+            (0x0000_1000, 4, "System RAM"),
+            (0x0010_0000, 4, "System RAM"),
+            (0x8000_0100, 4, "reserved"),
+            // Window straddling the boundary into `reserved`.
+            (0x7FFF_FFFC, 8, "System RAM"),
+            (0x8FFF_FFFC, 8, "reserved"),
         ] {
-            let err = parse(addr, 4).unwrap_err();
+            let err = parse(addr, size).unwrap_err();
             assert_eq!(err.code(), "E_BLUEPRINT_RAM");
             assert!(err.to_string().contains(resource));
         }
@@ -710,6 +764,7 @@ a0000000-a000ffff : axi_gpio@a0000000
         assert_eq!(found.region_index, 0);
         assert_eq!(found.device_name, "uio0");
         assert_eq!(Path::new(&found.dev_node), dev_dir.join("uio0"));
+        assert!(find_uio_region(&sysfs_uio, &dev_dir, 0xA000_0120, 0).is_none());
         assert!(find_uio_region(&sysfs_uio, &dev_dir, 0xA000_0FFC, 8).is_none());
         assert!(find_uio_region(&sysfs_uio, &dev_dir, 0xA000_1000, 4).is_none());
 
@@ -752,10 +807,14 @@ a0000000-a000ffff : axi_gpio@a0000000
 
     #[test]
     fn test_resolve_rejects_unknown_address() {
-        let err = resolve(0xDEAD_BEEF_0000, 4, true).err().unwrap();
+        let err = resolve(0xDEAD_BEEF_0000, 4, &MapperType::Auto, true)
+            .err()
+            .unwrap();
         assert_eq!(err.code(), "E_BLUEPRINT_UNMAPPED");
         assert!(matches!(
-            resolve(0xDEAD_BEEF_0000, 4, false).unwrap().mapper,
+            resolve(0xDEAD_BEEF_0000, 4, &MapperType::Auto, false)
+                .unwrap()
+                .mapper,
             MapperType::DevMem
         ));
     }

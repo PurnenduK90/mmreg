@@ -41,7 +41,7 @@ Add `mmreg` to your project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-mmreg = "1.0"
+mmreg = "1.1"
 ```
 
 Or using `cargo add`:
@@ -76,12 +76,12 @@ without a matching toolchain, copy the musl binary (e.g.
 
 You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) root filesystem using either a **source-built Cargo recipe** (Rust $\ge 1.75$: Yocto 5.0 "scarthgap" or newer) or a **pre-built binary recipe** (compatible with any Yocto release).
 
-### Option A: Building from Source with `inherit cargo` (`mmreg_1.0.1.bb`)
+### Option A: Building from Source with `inherit cargo` (`mmreg_1.1.0.bb`)
 
-Create `meta-custom/recipes-devtools/mmreg/mmreg_1.0.1.bb`:
+Create `meta-custom/recipes-devtools/mmreg/mmreg_1.1.0.bb`:
 
 ```bitbake
-SUMMARY = "Safe, concurrent 32-bit memory-mapped IO register access CLI and library"
+SUMMARY = "Safe, concurrent 8/16/32/64-bit memory-mapped IO register access CLI and library"
 HOMEPAGE = "https://github.com/PurnenduK90/mmreg"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://LICENSE.txt;md5=3914388ed65427d749c0c5886d2d12cf"
@@ -134,41 +134,87 @@ Add `mmreg` to `conf/local.conf` or your custom image recipe (e.g., `petalinux-i
 IMAGE_INSTALL:append = " mmreg"
 ```
 
-### Recommended Yocto Kernel & Device Tree Configuration for `mmreg`
+---
 
-To get full benefit from `mmreg`'s automatic UIO backend and Hardware Pre-Flight checks on embedded targets (such as Xilinx Zynq-7000 / Zynq UltraScale+ MPSoC):
+## Setting Up Linux Userspace I/O (UIO)
 
-1. **Enable Generic UIO and FPGA Manager in Kernel Config (`cfg/mmreg.cfg`)**:
-   ```ini
-   CONFIG_UIO=y
-   CONFIG_UIO_PDRV_GENIRQ=y
-   CONFIG_FPGA=y
-   CONFIG_FPGA_MGR_ZYNQ_FPGA=y
-   CONFIG_FPGA_MGR_ZYNQMP_FPGA=y
-   ```
-2. **Bind `generic-uio` in Device Tree (`system-user.dtsi`)**:
-   ```dts
-   / {
-       chosen {
-           bootargs = "earlycon console=ttyPS0,115200 uio_pdrv_genirq.of_id=generic-uio root=/dev/mmcblk0p2 rw rootwait";
-       };
-   };
+In production embedded Linux images, peripherals and custom FPGA IP blocks should be bound to the
+kernel's generic UIO driver (`uio_pdrv_genirq`) rather than accessed via `/dev/mem`. UIO maps only
+the peripheral's declared register window and works in default `mmreg` builds without the `debug`
+feature or `CAP_SYS_RAWIO`.
 
-   &axi_gpio_0 {
-       compatible = "generic-uio";
-       status = "okay";
-   };
-   ```
+### 1. Kernel Configuration (`cfg/mmreg.cfg`)
+
+Enable UIO, `uio_pdrv_genirq`, and (on FPGA SoCs) the FPGA Manager subsystem:
+
+```ini
+CONFIG_UIO=y
+CONFIG_UIO_PDRV_GENIRQ=y
+CONFIG_FPGA=y
+CONFIG_FPGA_MGR_ZYNQ_FPGA=y
+CONFIG_FPGA_MGR_ZYNQMP_FPGA=y
+```
+
+### 2. Device Tree Binding (`system-user.dtsi`)
+
+Give each IP block `compatible = "generic-uio"` and an explicit, unique `linux,uio-name` property:
+
+```dts
+my_block@a0010000 {
+    compatible = "generic-uio";
+    reg = <0x0 0xa0010000 0x0 0x10000>;
+    interrupts = <0 89 4>;            /* optional: level-high interrupt */
+    linux,uio-name = "my_block";      /* optional; defaults to the DT node name */
+    status = "okay";
+};
+```
+
+Because `/dev/uioN` numbers can change between boots or Device Tree overlays, programs and scripts
+should always open devices by name (`Device::open_uio("my_block")` or `mmreg read my_block 0x04`),
+which inspects `/sys/class/uio/uio*/name`. Keep `linux,uio-name` unique across nodes: if two UIO
+devices share a name, `mmreg` refuses with `[E_UIO_AMBIGUOUS]` rather than guessing.
+
+### 3. Passing `of_id=generic-uio` to `uio_pdrv_genirq`
+
+The kernel's `uio_pdrv_genirq` driver only binds `compatible = "generic-uio"` nodes when told which
+Device Tree `compatible` string to match:
+
+- **Built-in driver (`CONFIG_UIO_PDRV_GENIRQ=y`)** — add to the kernel command line (`bootargs`):
+  ```dts
+  / {
+      chosen {
+          bootargs = "earlycon console=ttyPS0,115200 uio_pdrv_genirq.of_id=generic-uio root=/dev/mmcblk0p2 rw rootwait";
+      };
+  };
+  ```
+- **Loadable module (`CONFIG_UIO_PDRV_GENIRQ=m`)** — pass the module parameter or add
+  `/etc/modprobe.d/uio.conf`:
+  ```text
+  options uio_pdrv_genirq of_id=generic-uio
+  ```
+
+### 4. `udev` Permissions (Read-Write vs. Read-Only)
+
+By default, `/dev/uioN` nodes are created as `root:root 0600`. Use a `udev` rule (for example in
+`/etc/udev/rules.d/99-uio.rules`) to grant access to a service group by device name:
+
+```text
+# Read-write access for control daemons
+SUBSYSTEM=="uio", ATTR{name}=="my_block", GROUP="hwaccess", MODE="0660"
+
+# Read-only access (0640) for monitoring / version-reader tools
+SUBSYSTEM=="uio", ATTR{name}==" telemetry_block", GROUP="monitors", MODE="0640"
+```
+
+`mmreg read` and `Device::uio("...").read_only()` open `/dev/uioN` with `O_RDONLY` and map it with
+`PROT_READ` (`flock(2)` works on a read-only descriptor), so read-only tools work with `0640`
+permissions without needing write access to the hardware.
 
 ---
 
-## System Permissions on Linux
+## Using `/dev/mem` (Debug Builds) and the Lock Directory
 
-### 1. Using UIO (`/dev/uioN`) — Recommended
-When a peripheral is bound to the Linux `uio_pdrv_genirq` or `generic-uio` driver, `mmreg` automatically detects and uses `/dev/uioN`.
-- You can grant non-root users access to `/dev/uioN` via a `udev` rule (e.g., assigning group `uio` or `dialout` with mode `0660`).
-
-### 2. Using `/dev/mem` (Debug Builds)
+### 1. `/dev/mem` Permissions
 When no UIO device maps the target address, an `mmreg` built with the `debug` feature uses
 `/dev/mem`; other builds refuse with `[E_DEBUG_DISABLED]` before opening anything. Keep `debug`
 builds to development images.
@@ -178,7 +224,7 @@ builds to development images.
   ```
 - With `CONFIG_STRICT_DEVMEM=y` the kernel refuses `/dev/mem` mappings of RAM, and with `CONFIG_IO_STRICT_DEVMEM=y` also of ranges claimed by a driver (`[E_DEVMEM_MMAP]`, `Operation not permitted`); expose such devices through UIO.
 
-### 3. Locking and the Lock Directory
+### 2. Locking and the Lock Directory
 Every access to a UIO device holds an exclusive `flock` on `/dev/uioN` itself, so C programs that
 lock their own `/dev/uioN` descriptor the same way exclude and are excluded by `mmreg`. Accesses
 through `/dev/mem` (and custom mappers) lock their physical page through a file in

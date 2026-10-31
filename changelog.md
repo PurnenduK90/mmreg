@@ -47,3 +47,23 @@
         * `[E_LOCK_OPEN]` remediation distinguishes UIO device files from page lock files
     * CLI
         * All CLI errors now carry a stable `[E_CLI_*]` code (`[E_CLI_MISSING_CMD]`, `[E_CLI_MISSING_ADDR]`, `[E_CLI_UNKNOWN_OPT]`); multiple `--validate` files are supported and `-h` / `--help` works after the command too
+* **[1.1.0]** `Device` Core, UIO Discovery & Interrupts, Sequence Locks, and Multi-Width CLI
+    * `Device` & `DeviceBuilder` (`src/device.rs`)
+        * `Send + Sync` register window with `&self` accessors: `read_u8`, `read_u16`, `read_u32`, `read_u64`, `write_u8`, `write_u16`, `write_u32`, `write_u64`, `read`, `write`, and `update_u32(offset, mask, value)` (locked atomic read-modify-write returning the updated `u32`)
+        * `Device::open_uio(name)` / `Device::uio(name)`, `Device::open_uio_path(path)` / `Device::uio_path(path)`, `Device::open_addr(base, size)` / `Device::addr(base, size)`, plus `uio::find(name) -> Result<String, MmregError>`
+        * `.region(n)` to select `maps/map<n>` and `.read_only()` (`O_RDONLY` + `PROT_READ`, rejecting writes/updates/unmask with `[E_READ_ONLY]`) so read-only tools work with `0640` permissions on `/dev/uioN`
+        * Blueprint, hardware pre-flight and safety-profile checks run once at `open()`; `Interface` is layered directly on top of `Device`
+    * Concurrency & Sequence Guards (`src/lock.rs`)
+        * Per-process `(st_dev, st_ino)` `SharedLock` registry so multiple `Device` handles in one process share a single open lock file descriptor without `flock(2)` self-deadlock and synchronize threads via a reentrant mutex + `Condvar`
+        * Reentrant sequence guard (`let _g = dev.lock()?;` returning `LockGuard`) held across multi-register sequences while preserving the inter-process `flock(2)` protocol
+        * On a `/dev/mem` or custom-mapper window spanning several pages, `dev.lock()` takes every page lock in ascending address order, so the sequence excludes accesses to the whole window (page lock files are open only while the guard is held)
+    * UIO Interrupts (`src/mmio.rs`, `src/device.rs`)
+        * `Device::irq_unmask()` (writes `1u32` to `/dev/uioN`) and `Device::irq_wait(timeout) -> Result<Option<u32>, MmregError>` (`poll(POLLIN)` + 4-byte `read`)
+        * New error variants and codes: `[E_UIO_NOT_FOUND]` (listing available UIO names), `[E_UIO_AMBIGUOUS]`, `[E_UIO_REQUIRED]`, `[E_UIO_IRQ]`, and `[E_READ_ONLY]`
+        * `MmregError::UnalignedWidthAccess { address, offset, width_bits }` (code `[E_UNALIGNED_ACCESS]`) for `Device` and `--width` accesses, naming the access width and the alignment it needs; `UnalignedAccess` keeps its fields and stays the 32-bit `Interface` / `read_register_at` error
+        * `read_u64` / `write_u64` document that 32-bit CPUs may split them into two bus accesses
+    * Diagnostics & CLI (`src/memcheck.rs`, `src/main.rs`)
+        * Zero `stderr` output from the library: non-fatal pre-flight warnings are collected and returned via `Device::warnings()` and `Interface::warnings()` (printed by the CLI)
+        * CLI adds `-w` / `--width <8|16|32|64>`, `mmreg read|write <uio-name> <offset> [value]` (works without the `debug` feature), and `-V` / `--version` showing enabled features
+    * Documentation
+        * Added UIO setup guide (`generic-uio`, `uio_pdrv_genirq.of_id`, `udev` rules) in `docs/users/02-installation.md` and generated-code guide (including `w1c`/`w1p` field rules) in `docs/users/04-library-usage.md`

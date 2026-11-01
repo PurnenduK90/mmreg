@@ -1,0 +1,34 @@
+{
+  "format": "mmreg-block/1.0",
+  "compatible": "acme,gpio-1.0",
+  "enum": {
+    "mode_e": {
+      "PUSH_PULL":  { "value": 0, "desc": "Drive high and low" },
+      "OPEN_DRAIN": { "value": 1, "desc": "Drive low only" }
+    }
+  },
+  "gpio": {
+    "desc": "8-pin GPIO controller",
+    "size": "0x100",
+    "VERSION": { "at": "0x0", "sw": "r", "reset": "0x0001_0000",
+      "MINOR": { "bits": "15:0" },
+      "MAJOR": { "bits": "31:16" }
+    },
+    "CTRL": { "at": "0x8", "desc": "Control",
+      "EN":      { "bits": "0", "desc": "Block enable" },
+      "MODE":    { "bits": "2:1", "encode": "mode_e" },
+      "RESTART": { "bits": "3", "sw": "w", "singlepulse": true, "desc": "Write 1: restart" }
+    },
+    "IN": { "at": "0x14", "sw": "r", "hw": "w" },
+    "IRQ_STATUS": { "at": "0x18",
+      "CHANGE": { "bits": "7:0", "onwrite": "woclr", "hw": "w", "desc": "Pin changed; write 1 to clear" }
+    },
+    "EVENT_FIFO": { "at": "0x1C", "desc": "Pin events; reading pops one",
+      "PIN":   { "bits": "2:0", "onread": "rclr", "hw": "w" },
+      "VALID": { "bits": "31", "onread": "rclr", "hw": "w" }
+    },
+    "DEBOUNCE": { "at": "0x24", "dim": 8,
+      "CYCLES": { "bits": "7:0", "reset": 4 }
+    }
+  }
+}

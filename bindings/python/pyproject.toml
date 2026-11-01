@@ -37,3 +37,11 @@ version = { attr = "mmreg.__version__" }
 # `libmmreg.so` is present only in the staging copy `just python-wheel` builds from; a plain
 # `pip install ./bindings/python` installs the pure-Python package and uses the system library.
 mmreg = ["py.typed", "libmmreg.so"]
+
+# `just lint-python`: `ruff check` and `ruff format --check` (bindings/python only).
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]

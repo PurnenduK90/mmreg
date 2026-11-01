@@ -50,7 +50,7 @@ from mmreg import Device
 
 with Device.open_addr(0x4000_0000, 0x100, force=True, mock=True) as d:
     d.write_u32(0x00, 0x1)
-    d.update_u32(0x00, 0xF0, 0x5 << 4)          # locked read-modify-write
+    d.update_u32(0x00, 0xF0, 0x5 << 4)  # locked read-modify-write
 
     d.define("CTRL", at=0x00, fields={"EN": "0", "MODE": "7:4"})
     d.CTRL.EN = True

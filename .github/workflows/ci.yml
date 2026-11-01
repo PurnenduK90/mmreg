@@ -18,6 +18,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: python3 -m pip install ruff==0.17.3  # pinned: the formatter changes between releases
       - uses: taiki-e/install-action@just
       - run: just lint
 
@@ -44,6 +48,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.75
       - run: cargo test --locked --no-default-features && cargo test --locked --all-features && cargo test --locked -p mmreg-capi && cargo test --locked -p mmreg-capi --all-features
+
+  python-oldest:
+    name: Python 3.8 (oldest in requires-python)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: python3 -m pip install uv && uv python install 3.8
+      - uses: taiki-e/install-action@just
+      - run: just test-python "$(uv python find 3.8)"
 
   build:
     name: Cross Build

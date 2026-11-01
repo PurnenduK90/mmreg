@@ -27,7 +27,7 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 
 | Code | Meaning | Remediation |
 | :--- | :--- | :--- |
-| `E_VALIDATION_HOOK_FAILED` | A profile check read a value that does not match `expected` under `mask`. | Satisfy the prerequisite named in the message (clock, reset, isolation). |
+| `E_VALIDATION_HOOK_FAILED` | A profile check, or a Python instance file's `checks` entry, read a value that does not match `expected` under `mask`. | Satisfy the prerequisite named in the message (clock, reset, isolation). |
 | `E_VALIDATION_PROFILE_PARSE` | The profile file is unreadable or invalid JSON (unknown key, missing key, no `"checks"`, number too large). | Fix the file; see the format in [Safety & Hardware Pre-Flight](05-safety-and-preflight.md#stage-3-safety-profiles---validate-profilejson). |
 
 ## Backends & UIO
@@ -71,7 +71,7 @@ These codes come from the C ABI (`mmreg_last_error_code()`) and the Python packa
 
 | Code | Meaning | Remediation |
 | :--- | :--- | :--- |
-| `E_INVALID_ARG` | A `NULL` pointer, unknown flag bits, `MMREG_O_MOCK` without `MMREG_O_FORCE`, `MMREG_REGION(n)` on `mmreg_open_addr`, or a mock window over 16 MiB. Python also: a value, offset, mask or timeout that is not an integer in range (`bool` only for 1-bit fields, no `float`), a string with a NUL byte, an invalid register or field name (not an identifier, starts with `_`, or shadows an attribute such as `size`), `fields` / `w1c` of the wrong type, or a closed `Device`. | Fix the argument named in the message. |
+| `E_INVALID_ARG` | A `NULL` pointer, unknown flag bits, `MMREG_O_MOCK` without `MMREG_O_FORCE`, `MMREG_REGION(n)` on `mmreg_open_addr`, or a mock window over 16 MiB. Python also: a value, offset, mask or timeout that is not an integer in range (`bool` only for 1-bit fields, no `float`), a string with a NUL byte, an invalid register or field name (not an identifier, starts with `_`, or shadows an attribute such as `size`), `fields` / `w1c` of the wrong type, a closed `Device`, an enum name the field's enumeration does not have, an array index that is not an integer, or assigning an attribute whose name is also a register or field (`d.size = 1` with a register `SIZE`: write `d["size"] = 1`). | Fix the argument named in the message. |
 | `E_BUFFER_TOO_SMALL` | `mmreg_find_uio`'s buffer cannot hold the `/dev/uioN` path and its NUL. | Pass a larger buffer (the message gives the size needed; 64 bytes is plenty). |
 | `E_INTERNAL_PANIC` | A bug in mmreg panicked inside a C ABI call; the panic was caught at the boundary. | Report it with the message; the handle is still valid but the failed call had no effect or an unknown one. |
 | `E_LIB_LOAD` | Python: `libmmreg` was not found, cannot be loaded (built for another CPU or C library), or has a different major version than the package. The error is also an `OSError`. | Install a wheel that bundles the library, install `libmmreg.so`, or set `MMREG_LIB_PATH`; see [Installation](02-installation.md#python-package). |

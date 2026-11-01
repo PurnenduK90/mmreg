@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 from pathlib import Path
 import tempfile
 from typing import Dict, List, Tuple
@@ -12,8 +11,10 @@ import unittest
 from unittest import mock
 
 import mmreg
-from mmreg import Block, Device, EnumValue, MmregError
+from mmreg import Block, EnumValue, MmregError
 from mmreg.__main__ import main as cli_main
+
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
 
 EXAMPLE_GPIO_BLOCK = {
@@ -439,9 +440,7 @@ class TestResolutionListChecksAndCli(unittest.TestCase):
             (uio0 / "device" / "of_node").mkdir(parents=True)
             (uio0 / "maps" / "map0").mkdir(parents=True)
             (uio0 / "name").write_text("gpio0\n", encoding="utf-8")
-            (uio0 / "device" / "of_node" / "compatible").write_bytes(
-                b"acme,gpio-1.0\x00generic-uio\x00"
-            )
+            (uio0 / "device" / "of_node" / "compatible").write_bytes(b"acme,gpio-1.0\x00generic-uio\x00")
             (uio0 / "maps" / "map0" / "addr").write_text("0xa0010000\n", encoding="utf-8")
             (uio0 / "maps" / "map0" / "size").write_text("0x1000\n", encoding="utf-8")
 
@@ -570,6 +569,119 @@ class TestResolutionListChecksAndCli(unittest.TestCase):
                 with self.assertRaises(MmregError) as ctx:
                     d.wait_irq(bad_timeout)  # type: ignore[arg-type]
                 self.assertEqual(ctx.exception.code, "E_INVALID_ARG")
+
+
+class TestNamesChecksAndBinding(unittest.TestCase):
+    def test_names_of_attributes_are_never_written_by_attribute_assignment(self) -> None:
+        blk = Block.from_dict(
+            {
+                "format": "mmreg-block/1.0",
+                "compatible": "t",
+                "b": {
+                    "SIZE": {"at": "0x0"},
+                    "CTRL": {"at": "0x8", "RESET": {"bits": "0"}, "NAME": {"bits": "1"}, "READ": {"bits": "2"}},
+                },
+            }
+        )
+        with mmreg.open(block=blk, at=0x4000_0000, force=True, mock=True) as d:
+            # `d.CTRL.name` is the register's name, so assigning it must not write the field NAME.
+            for owner, attr in ((d.CTRL, "name"), (d.CTRL, "reset"), (d.CTRL, "read"), (d, "size")):
+                with self.assertRaises(MmregError) as ctx:
+                    setattr(owner, attr, 1)
+                self.assertEqual(ctx.exception.code, "E_INVALID_ARG")
+                self.assertIn("use [", str(ctx.exception))
+            self.assertEqual(d.read_u32(0x8), 0)
+            self.assertEqual(d.read_u32(0x0), 0)
+            self.assertEqual(d.CTRL.name, "CTRL")
+            # Exact-case attributes and `[]` reach the register and its fields.
+            d.CTRL.NAME = 1
+            d.CTRL["reset"] = 1
+            d["size"] = 0x55
+            self.assertEqual(d.read_u32(0x8), 0b11)
+            self.assertEqual(int(d.SIZE), 0x55)
+            self.assertEqual(int(d.CTRL["read"]), 0)
+
+            d.define("SCRATCH", at=0x40, fields={"NAME": "0", "HI": "31:16"})
+            with self.assertRaises(MmregError):
+                d.SCRATCH.name = 1
+            d.SCRATCH["name"] = 1
+            self.assertEqual(int(d.SCRATCH.NAME), 1)
+
+    def test_assigning_registers_and_star_import(self) -> None:
+        with mmreg.open(at=0x4000_0000, size=0x100, force=True, mock=True) as d:
+            a = d.define("A", at=0x0)
+            d.define("B", at=0x4)
+            d.B = 7
+            d.A = d.B  # copies the value
+            self.assertEqual(int(a), 7)
+            with mock.patch.object(d, "write_u32", side_effect=AssertionError("written")):
+                d.A = d.A  # no write-back that could clear pending bits
+
+        namespace: Dict[str, object] = {}
+        exec("from mmreg import *", namespace)
+        self.assertNotIn("open", namespace)
+        self.assertNotIn("list", namespace)
+        self.assertIs(namespace["Block"], Block)
+
+    def test_instance_checks_skipped_with_force_or_mock(self) -> None:
+        paths = {"blocks_path": EXAMPLES / "blocks", "instances_path": EXAMPLES / "instances"}
+        # The example check expects a set clock bit; the mock window reads 0, so it would fail.
+        with mmreg.open("gpio0", mock=True, force=True, **paths) as d:
+            self.assertEqual(d.base_address, 0xA001_0000)
+            self.assertEqual(d.size, 0x100)
+        with self.assertRaises(MmregError) as ctx:
+            mmreg.open("gpio0", mock=True, force=True, check_reader=lambda addr: 0, **paths)
+        self.assertEqual(ctx.exception.code, "E_VALIDATION_HOOK_FAILED")
+
+    def test_non_string_keys_and_lazy_arrays(self) -> None:
+        for doc in (
+            {"format": "mmreg-block/1.0", "compatible": "t", "b": {1: {"at": "0"}}},
+            {"format": "mmreg-block/1.0", "compatible": "t", 2: {}, "b": {"R": {"at": "0"}}},
+            {"format": "mmreg-block/1.0", "compatible": "t", "b": {"R": {"at": "0", "F": {"bits": "0", 3: 1}}}},
+        ):
+            with self.assertRaises(MmregError) as ctx:
+                Block.from_dict(doc)  # type: ignore[arg-type]
+            self.assertEqual(ctx.exception.code, "E_BLOCK_PARSE")
+
+        blk = Block.from_dict(
+            {
+                "format": "mmreg-block/1.0",
+                "compatible": "t",
+                "b": {
+                    "R": {"at": "0", "dim": 4096, "A": {"bits": "0"}, "B": {"bits": "31:16"}},
+                    "CH": {"at": "0x4000", "dim": 2, "CFG": {"at": "0"}, "STAT": {"at": "4", "sw": "r"}},
+                },
+            }
+        )
+        with mmreg.open(block=blk, at=0x4000_0000, force=True, mock=True) as d:
+            self.assertEqual(len(d.R), 4096)
+            d.R[4095].B = 0xBEEF
+            self.assertEqual(d.read_u32(4095 * 4), 0xBEEF_0000)
+            self.assertEqual([r.offset for r in d.CH], [0x4000, 0x4008])
+            self.assertEqual(d.CH[1].STAT.offset, 0x400C)
+            with self.assertRaises(IndexError):
+                d.R[4096]
+            self.assertEqual(len(d.dump().splitlines()), 4096 + 4)
+
+    def test_dump_lists_inline_registers_of_a_block_device(self) -> None:
+        with mmreg.open(
+            "gpio0", mock=True, force=True, blocks_path=EXAMPLES / "blocks", instances_path=EXAMPLES / "instances"
+        ) as d:
+            d.define("SCRATCH", at=0x80, fields={"LO": "15:0"})
+            d.SCRATCH.LO = 3
+            dump = d.dump()
+            self.assertIn("EVENT_FIFO @ 0x1c = <skipped: read side effect (rclr)>", dump)
+            # `~` marks values hardware changes (`hw: "w"`): a register without fields, and a field.
+            self.assertIn("IN~ @ 0x14 = 0x0000_0000", dump.splitlines())
+            self.assertIn("IRQ_STATUS @ 0x18 = 0x0000_0000  (CHANGE~=0)", dump)
+            self.assertIn("(EN=0, MODE=PUSH_PULL, RESTART=0)", dump)
+            self.assertTrue(dump.endswith("SCRATCH @ 0x80 = 0x0000_0003  (LO=3)"))
+
+    def test_example_files_are_valid(self) -> None:
+        files = sorted(str(p) for p in EXAMPLES.glob("*/*.json"))
+        self.assertEqual(len(files), 2)
+        with mock.patch("sys.stdout", io.StringIO()):
+            self.assertEqual(cli_main(["check", *files]), 0)
 
 
 if __name__ == "__main__":

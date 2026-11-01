@@ -1,0 +1,9 @@
+{
+  "format": "mmreg-instances/1.0",
+  "x-note": "On hardware: install as /etc/mmreg/instances.d/board.json (an `at` instance needs a debug libmmreg).",
+  "gpio0": { "block": "acme,gpio-1.0", "at": "0xA0010000",
+    "checks": [
+      { "name": "GPIO clock enabled", "addr": "0xFF5E0074", "mask": "0x01000000", "expected": "0x01000000" }
+    ]
+  }
+}

@@ -165,7 +165,7 @@ class TestMmregPythonBinding(unittest.TestCase):
             uninit = cls.__new__(cls)
             self.assertFalse(hasattr(uninit, "anything"))
             with self.assertRaises(AttributeError) as attr_ctx:
-                getattr(uninit, "anything")
+                uninit.anything  # noqa: B018
             self.assertIn("anything", str(attr_ctx.exception))
 
     def test_every_error_is_mmreg_error(self) -> None:

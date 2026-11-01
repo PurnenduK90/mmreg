@@ -145,3 +145,26 @@
         * `python -m mmreg check <file.json> [...]` validates block and instance files (including cross-file duplicate instance checks) without hardware access for generators' CI
     * Documentation & Packaging
         * Froze the `mmreg-block/1` specification in `docs/users/07-block-files.md`, added the new error codes to `docs/users/06-troubleshooting.md`, and updated the Yocto recipe in `docs/users/02-installation.md` (`mmreg_1.3.0.bb`) to install all `bindings/python/mmreg/*.py` modules and `python3-json`
+* **[1.3.1]** Python Block-File Fixes: Attribute-Safe Assignment, Instance Checks with `force` / `mock`, Lazy Binding & Module Split
+    * By-Name Access (`bindings/python/mmreg/`)
+        * Assigning an attribute whose name is also a register or field no longer writes hardware: lookups are case-insensitive, so `d.CTRL.name = 1` wrote a field `NAME` while `d.CTRL.name` read the register's name (likewise `reset`, `read`, `desc`, and `d.size` / `d.lock` for registers `SIZE` / `LOCK`); such assignments now raise `[E_INVALID_ARG]` naming the register or field, which `d["size"]` / `d.CTRL["name"]` reach (also for inline registers, which gained `[]`)
+        * Assigning a register or field object writes its value (`d.A = d.B`), and assigning one to itself (`d.CTRL = d.CTRL`) is a no-op instead of a write-back that could clear pending bits; it was silently ignored before, also for other registers
+        * Instance `checks` are skipped with `force=True` or `mock=True`, like the library's pre-flight checks, instead of reading an all-zero mock window (which made such instances impossible to open with `mock=True`); `check_reader` still runs them
+        * `from mmreg import *` no longer exports `open` and `list`, which shadowed the built-ins (`mmreg.open` / `mmreg.list` are unchanged)
+        * `Block.from_dict` rejects keys that are not strings with `[E_BLOCK_PARSE]` instead of an `AttributeError`, and an unknown field property names the field again
+        * `dump()` also lists the inline registers (`d.define`) of a device opened with a block
+    * Footprint & Structure
+        * Registers, fields, array elements and group members are bound on access with `__slots__`, and `dump()` walks the block specification instead of a second bound copy of every register: a 4096-element register array went from 13.6 MB to under 0.05 MB bound (`tracemalloc`)
+        * `block.py` split into `block.py` (loader and validator), `_access.py` (bound registers and `dump`) and `_resolve.py` (search paths, `mmreg.open`, `mmreg.list`); shared helpers replace duplicated child scanning, access-key parsing, array indexing, value protocol (`int`, `==`, `format`) and instance merging (`python -m mmreg check` uses the same duplicate check as `mmreg.open`)
+    * Examples, Docs & Lint
+        * `bindings/python/examples/by_name.py` with `blocks/acme,gpio-1.0.json` and `instances/board.json` (run and `python -m mmreg check`ed by `just examples` and the tests); the block-file part of `quickstart.py` moved there
+        * Block-file section in `docs/users/04-library-usage.md`; attribute names, instance checks with `force` / `mock` and `debug` `libmmreg` in `docs/users/07-block-files.md` and `docs/users/06-troubleshooting.md`
+        * `just lint-python` (`ruff check`, `ruff format --check`, rules in `bindings/python/pyproject.toml`) is part of `just lint` and CI (ruff pinned to 0.17.3)
+* **[1.3.2]** Python 3.8 Import Fix, Volatile Fields in `dump` & Python 3.8 CI
+    * Python Binding (`bindings/python/mmreg/`)
+        * The package imports again on Python 3.8, the oldest version `requires-python = ">=3.8"` allows: 1.3.1's `_resolve.py` subscripted `collections.abc.Iterable` at import time, which needs Python 3.9 (`TypeError: 'ABCMeta' object is not subscriptable`)
+        * `dump()`, `print(d.R)` and `d.R.format()` mark values hardware changes (`hw: "w"` / `"rw"`, status and counters) with `~` after the name (`CHANGE~=1`, `IN~ @ 0x14 = ...`), as the `mmreg-block/1` specification describes; the `hw` key was parsed but never shown
+    * CI & Tasks
+        * `python-oldest` CI job runs the Python tests on Python 3.8 (installed with `uv`); `just test-python [python]` takes the interpreter and treats warnings as errors
+    * Documentation
+        * `docs/users/07-block-files.md`: the `~` volatile marker, and `$MMREG_INSTANCES` entries may be directories (their `*.json` files in name order), as implemented

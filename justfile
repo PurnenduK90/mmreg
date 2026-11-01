@@ -5,7 +5,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 default: ci
 
 # Everything CI runs except cross builds
-ci: fmt-check clippy test coverage doc package-check python-wheel-test
+ci: lint test coverage doc package-check python-wheel-test
 
 # CI plus release builds of every target in targets.txt (needs Docker + cross)
 ci-all: ci build-targets
@@ -23,7 +23,18 @@ clippy:
     cargo clippy --all-targets -- -D warnings
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-lint: fmt-check clippy
+lint: fmt-check clippy lint-python
+
+# Lint and format check of the Python package (`pip install ruff`; rules in bindings/python/pyproject.toml)
+[unix]
+lint-python:
+    python3 -m ruff check bindings/python
+    python3 -m ruff format --check bindings/python
+
+[windows]
+lint-python:
+    python -m ruff check bindings/python
+    python -m ruff format --check bindings/python
 
 # The Python package from the source tree, loading target/debug/libmmreg.so
 py_env := "MMREG_LIB_PATH=target/debug/libmmreg.so PYTHONPATH=bindings/python"
@@ -45,19 +56,23 @@ test: && examples
     cargo test
     cargo test --workspace --all-features
 
-# Python binding tests against target/debug/libmmreg.so
+# Python binding tests against target/debug/libmmreg.so, with `python3` or the interpreter given
+# (CI runs them on the oldest version in `requires-python`: `just test-python "$(uv python find 3.8)"`)
 [unix]
-test-python:
+test-python python="python3":
     cargo build -p mmreg-capi
-    {{py_env}} python3 -m unittest discover -s bindings/python/tests -v
+    {{py_env}} {{python}} -W error -m unittest discover -s bindings/python/tests -v
 
-# Runs the mock-device examples. The hardware examples (`uio_irq`) are only compiled: `cargo test`
-# builds examples/*.rs and the C interop test bindings/c/examples/*.c.
+# Runs the mock-device examples and validates the example block and instance files. The hardware
+# examples (`uio_irq`) are only compiled: `cargo test` builds examples/*.rs and the C interop test
+# bindings/c/examples/*.c.
 [unix]
 examples:
     cargo run --quiet --example mock_quickstart
     cargo build -p mmreg-capi
     {{py_env}} python3 bindings/python/examples/quickstart.py
+    {{py_env}} python3 bindings/python/examples/by_name.py
+    PYTHONPATH=bindings/python python3 -m mmreg check bindings/python/examples/blocks/*.json bindings/python/examples/instances/*.json
     python3 -m py_compile bindings/python/examples/uio_irq.py
 
 [windows]
@@ -113,6 +128,7 @@ python-wheel-test: python-wheel
     PY
     env -u MMREG_LIB_PATH -u PYTHONPATH ./bin/python -m unittest discover -s ../../bindings/python/tests
     env -u MMREG_LIB_PATH -u PYTHONPATH ./bin/python ../../bindings/python/examples/quickstart.py
+    env -u MMREG_LIB_PATH -u PYTHONPATH ./bin/python ../../bindings/python/examples/by_name.py
 
 [windows]
 python-wheel-test:

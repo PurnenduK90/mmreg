@@ -30,10 +30,14 @@ bindings/
 │   ├── mmreg.pc             # pkg-config file
 │   └── examples/            # test_capi.c (self-test, lock interop), quickstart.c, uio_irq.c
 └── python/        # pure-Python ctypes package over libmmreg.so
-    ├── mmreg/__init__.py    # the package (`__version__` is the single version source)
-    ├── pyproject.toml, README.md   # pip packaging; `just python-wheel` bundles libmmreg.so
-    ├── tests/test_mmreg.py
-    └── examples/            # quickstart.py, uio_irq.py
+    ├── mmreg/__init__.py    # Device, inline define(), errors, ctypes (`__version__`: the single version source)
+    ├── mmreg/block.py       # block / instance file loader and validator (no hardware access)
+    ├── mmreg/_access.py     # registers, fields, arrays, groups bound to a Device on access; dump()
+    ├── mmreg/_resolve.py    # search paths, sysfs lookup, mmreg.open() / mmreg.list(), instance checks
+    ├── mmreg/__main__.py    # `python -m mmreg check`
+    ├── pyproject.toml, README.md   # pip packaging (`just python-wheel` bundles libmmreg.so), ruff rules
+    ├── tests/               # test_mmreg.py (binding), test_block.py (block files)
+    └── examples/            # quickstart.py, by_name.py + blocks/, instances/ (mock), uio_irq.py (hardware)
 
 examples/          # Rust examples: mock_quickstart.rs (runs anywhere), uio_irq.rs (hardware)
 ```

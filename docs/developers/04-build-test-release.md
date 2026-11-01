@@ -7,21 +7,24 @@
   [Roadmap Reference → Rust version](05-roadmap-reference.md#rust-version).
 - [`just`](https://github.com/casey/just) for the tasks below; `cargo-llvm-cov` for coverage;
   [`cross`](https://github.com/cross-rs/cross) and Docker for cross builds; on Linux a C compiler
-  (`cc`) and Python 3 with `pip` and `venv` for the C, Python and wheel tests.
+  (`cc`) and Python 3 with `pip` and `venv` for the C, Python and wheel tests;
+  [`ruff`](https://docs.astral.sh/ruff/) for `just lint` (`pip install ruff==0.17.3`, the version CI
+  pins).
 
 ## Tasks (`justfile`)
 
 | Command | Runs |
 | :--- | :--- |
-| `just` / `just ci` | `fmt-check`, `clippy`, `test`, `coverage`, `doc`, `package-check`, `python-wheel-test` |
+| `just` / `just ci` | `lint`, `test`, `coverage`, `doc`, `package-check`, `python-wheel-test` |
 | `just ci-all` | `ci` plus `build-targets` |
-| `just lint` | `fmt-check` + `clippy` |
+| `just lint` | `fmt-check` + `clippy` + `lint-python` |
+| `just lint-python` | `ruff check` and `ruff format --check` of `bindings/python` (rules in its `pyproject.toml`) |
 | `just clippy` | clippy with `-D warnings`: `--no-default-features`, default, `--all-features` |
 | `just test` | unit and doc tests for the same three feature sets and `mmreg-capi` (C interop tests, which compile every `bindings/c/examples/*.c` and run `quickstart.c`), then `test-python` and `examples` |
-| `just test-python` | the Python binding's unit tests against `target/debug/libmmreg.so` |
-| `just examples` | runs the mock-device examples (Rust, Python); the `uio_irq` hardware examples are only compiled |
+| `just test-python [python]` | the Python binding's unit tests against `target/debug/libmmreg.so`, with warnings as errors, on `python3` or the interpreter given |
+| `just examples` | runs the mock-device examples (Rust, Python) and `python -m mmreg check` on the example block and instance files; the `uio_irq` hardware examples are only compiled |
 | `just python-wheel [triple]` | wheel bundling a release `libmmreg.so` in `target/wheels/`, for the host or a glibc `cross` target |
-| `just python-wheel-test` | installs the host wheel into a fresh venv and runs the Python tests and quickstart against it |
+| `just python-wheel-test` | installs the host wheel into a fresh venv and runs the Python tests and the mock examples against it |
 | `just coverage` | `cargo llvm-cov`, failing under 80% line coverage |
 | `just doc` | `cargo doc` with warnings denied |
 | `just build-targets` | `cross build --release --features debug` for every triple in `targets.txt` |
@@ -73,7 +76,8 @@ host toolchain and the build fails. Left out for that reason: `riscv64gc-unknown
 ## CI/CD (`.github/workflows/`)
 - **[`ci.yml`](../../.github/workflows/ci.yml)** (push / PR to `main`): `lint` (`just lint`),
   `test` (`just test coverage doc python-wheel-test`), `msrv` (`cargo test --locked` on 1.75, both
-  feature sets of `mmreg` and of `mmreg-capi`), then
+  feature sets of `mmreg` and of `mmreg-capi`), `python-oldest` (`just test-python` on Python 3.8,
+  installed with `uv`, the oldest version `requires-python` allows), then
   `build` (`just build-targets`).
 - **[`publish.yml`](../../.github/workflows/publish.yml)**: on a `v*.*.*` tag, `cargo publish`
   with the `CARGO_TOKEN` secret.

@@ -19,7 +19,7 @@ examples, so they stay in step with the API:
 | :--- | :--- | :--- |
 | Rust | [`examples/mock_quickstart.rs`](../../examples/mock_quickstart.rs): `cargo run --example mock_quickstart` | [`examples/uio_irq.rs`](../../examples/uio_irq.rs): `cargo run --example uio_irq -- <uio name>` |
 | C | [`bindings/c/examples/quickstart.c`](../../bindings/c/examples/quickstart.c) | [`bindings/c/examples/uio_irq.c`](../../bindings/c/examples/uio_irq.c) |
-| Python | [`bindings/python/examples/quickstart.py`](../../bindings/python/examples/quickstart.py) | [`bindings/python/examples/uio_irq.py`](../../bindings/python/examples/uio_irq.py) |
+| Python | [`bindings/python/examples/quickstart.py`](../../bindings/python/examples/quickstart.py); by name from block files: [`by_name.py`](../../bindings/python/examples/by_name.py) | [`bindings/python/examples/uio_irq.py`](../../bindings/python/examples/uio_irq.py) |
 
 ---
 
@@ -466,3 +466,38 @@ pickling, so `multiprocessing` workers return it intact. A missing register or f
 an `OSError`, and `E_NOT_COPYABLE` also a `TypeError`. Field bit specifications are `"7:4"`,
 `"[7:4]"`, `"0"`, `0` or `(7, 4)` (decimal or `0x` hex); anything else, or overlapping fields,
 raises `E_SUBREG_RANGE`. Installing the package: [Installation](02-installation.md#python-package).
+
+### Access by Name from Block Files
+
+For debugging and bring-up, the package also reads [block files](07-block-files.md) (JSON
+descriptions of an IP block's registers, fields and enumerations, usually emitted by the register
+generator). `mmreg.open` finds the block file from the UIO device's Device Tree `compatible`, or
+from an instance file, and returns the same `Device` with the registers as attributes:
+
+```python
+import mmreg
+
+print(mmreg.list())                      # instances found and whether their device is present
+with mmreg.open("gpio0") as d:           # UIO name -> of_node/compatible -> <compatible>.json
+    print(d.CTRL)                        # CTRL @ 0x08 = 0x0000_0003  (EN=1, MODE=OPEN_DRAIN, RESTART=0)
+    d.CTRL.MODE = "OPEN_DRAIN"           # enum names; a masked read-modify-write under the lock
+    d.IRQ_STATUS.CHANGE = 0x01           # write-1-to-clear: the other bits are written as 0
+    d.DEBOUNCE[3].CYCLES = 10            # register arrays and groups
+    fifo = d.EVENT_FIFO.read(side_effects=True)  # read-to-clear needs side_effects=True
+    print(d.dump(diff_reset=True))       # registers that differ from reset; rclr ones are skipped
+```
+
+Field writes follow the access type of every field of the register (`sw`, `onwrite`, `onread`,
+`singlepulse`), so a write never changes another field or clears a pending bit; accesses the
+access types forbid raise `E_READ_ONLY`, `E_WRITE_ONLY`, `E_RMW_UNSAFE`, `E_READ_SIDE_EFFECT` or
+`E_ACCESS_DENIED` ([rules](07-block-files.md#access-behaviour)). Lookups are case-insensitive, so a
+register or field whose name is also a `Device` or register attribute (`SIZE`, `NAME`, `RESET`,
+`READ`, ...) is reached by its exact upper-case name or by index: `d.SIZE` or `d["size"]`,
+`d.CTRL["name"] = 1`; assigning the attribute (`d.size = 1`, `d.CTRL.name = 1`) raises
+`E_INVALID_ARG` instead of writing hardware.
+
+An instance's `checks` run before its window is mapped, except with `force=True` or `mock=True`;
+outside a UIO region they read `/dev/mem` and so need a `debug` build of `libmmreg`
+(`E_DEBUG_DISABLED` otherwise). `python -m mmreg check <file.json> ...` validates block and instance
+files without hardware, for a generator's CI. `mmreg.open` and `mmreg.list` are not exported by
+`from mmreg import *`, which would shadow the built-in `open` and `list`.

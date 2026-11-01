@@ -136,7 +136,7 @@ register without fields is one field covering all its bits.
 | `onwrite` | | Write side effect: `woclr`, `woset`, `wot`, `wzc`, `wzs`, `wzt`, `wclr`, `wset` |
 | `onread` | | Read side effect: `rclr`, `rset` |
 | `singlepulse` | `false` | With `sw: "w"`: writing 1 makes a one-cycle pulse; the field reads 0 |
-| `hw` | `"r"` | Hardware access; `w` / `rw` means hardware changes the value (status, counters): shown as volatile by `watch` and `dump` |
+| `hw` | `"r"` | Hardware access; `w` / `rw` means hardware changes the value (status, counters): shown as volatile, a `~` after the name (`CHANGE~=1`), by `dump`, `print(d.R)` and `watch` |
 | `reset` | `0` | Reset value; `dump(diff_reset=True)` compares against it |
 | `encode` | | Name of an enumeration in `enum` |
 | `desc`, `name` | | Description, display name |
@@ -233,7 +233,8 @@ cannot be decoded with a stale block file, and lookup reads a few sysfs files an
 **Search paths**, first match wins:
 - block files: `$MMREG_BLOCKS` (`:`-separated directories), `/etc/mmreg/blocks/`,
   `/usr/share/mmreg/blocks/`;
-- instance files: `$MMREG_INSTANCES` (`:`-separated files), then every `/etc/mmreg/instances.d/*.json`.
+- instance files: `$MMREG_INSTANCES` (`:`-separated files or directories, a directory meaning its
+  `*.json` files in name order), then every `/etc/mmreg/instances.d/*.json`.
 
 IP recipes install block files into `/usr/share/mmreg/blocks/`; local overrides go into
 `/etc/mmreg/blocks/`. Both belong in development images only.
@@ -262,7 +263,7 @@ without UIO, and to attach prerequisite checks. Instances are object keys, as in
 | `uio` | one of `uio` / `at` | UIO device name; window from sysfs |
 | `uio_map` | no (`0`) | Region index of the UIO device (`maps/mapN`) |
 | `at` | one of `uio` / `at` | Physical address; access through `/dev/mem`, which needs a `debug` build of `libmmreg` |
-| `checks` | no | Prerequisites run before the block is touched: same JSON objects as a safety profile's `"checks"` (`name`, `addr`, `mask`, `expected`) |
+| `checks` | no | Prerequisites run before the block is touched: same JSON objects as a safety profile's `"checks"` (`name`, `addr`, `mask`, `expected`). Skipped with `force=True` or `mock=True`, like the library's pre-flight checks; outside a UIO region they need a `debug` `libmmreg` (`/dev/mem`) |
 
 An instance in a file takes precedence over a UIO device of the same name. Two files defining one
 instance name is an error (`[E_INSTANCE_DUPLICATE]`).
@@ -293,8 +294,15 @@ scratch = d.define("SCRATCH", at=0x40, fields={"LO": "15:0", "HI": "31:16"})
 scratch.HI = 0xBEEF                        # inline definition, no block file needed
 ```
 
+Registers, groups and fields are attributes, found ignoring case. A name that is also an attribute
+of the object (`Device.size`, `lock`, `dump`; a register's `name`, `offset`, `reset`, `read`, ...)
+keeps the attribute: reach the register or field by its exact name (`d.SIZE`, `d.CTRL.NAME`) or by
+index (`d["size"]`, `d.CTRL["name"] = 1`). Assigning such an attribute raises `[E_INVALID_ARG]`, so
+it never writes hardware by accident.
+
 `python -m mmreg check <file.json>` validates block and instance files without hardware, for
-generators' CI.
+generators' CI. A worked example with both file kinds that runs without hardware:
+[`bindings/python/examples/by_name.py`](../../bindings/python/examples/by_name.py).
 
 ---
 

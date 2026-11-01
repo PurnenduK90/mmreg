@@ -127,3 +127,21 @@
         * `${PN}-python` RDEPENDS on `python3-ctypes` (Yocto packages `ctypes` separately from `python3-core`) and installs `py.typed`
     * Python Binding (`bindings/python/mmreg/`)
         * Searches `/usr/lib64` for `libmmreg` (multilib images), before `ctypes.util.find_library`, which needs `ldconfig`, `gcc` or `ld` on the target
+* **[1.3.0]** Python By-Name Access (`mmreg-block/1` & `mmreg-instances/1`), Field Decoding, Access-Type Safety, Wide Registers & `dump`
+    * Block & Instance File Loader and Validator (`bindings/python/mmreg/block.py`)
+        * Standard-library `json` loader and validator for `mmreg-block/1.0` and `mmreg-instances/1.0` (`Block.from_file`, `Block.from_json`, `Block.from_dict`, `load_instance_file`, `mmreg.check`)
+        * Strict schema validation with `"x-*"` extension keys ignored everywhere, format version check (`[E_BLOCK_VERSION]`), duplicate JSON key and case-insensitive sibling collision detection, alignment (`regwidth / 8`), block and window bounds, register/group/array (`dim`, `stride`) and bitfield overlap checks, and enumeration value width checks (`[E_BLOCK_PARSE]`). Every diagnostic names the file, register and field
+    * Name Resolution, Pre-Access Instance Checks & Discovery (`mmreg.open`, `mmreg.list`)
+        * `mmreg.open(name)` resolves `name` through instance files (`$MMREG_INSTANCES`, `/etc/mmreg/instances.d/*.json`, rejecting duplicate instance names across files with `[E_INSTANCE_DUPLICATE]`), then `/sys/class/uio/uio*/name` → `device/of_node/compatible` → first matching `<compatible>.json` in `$MMREG_BLOCKS`, `/etc/mmreg/blocks/`, `/usr/share/mmreg/blocks/`. Also supports explicit `mmreg.open(block=..., uio=... | at=...)` and raw windows `mmreg.open(at=..., size=...)`
+        * Instance `checks` (`name`, `addr`, `mask`, `expected`) run before the peripheral window is mapped (`[E_VALIDATION_HOOK_FAILED]`)
+        * `mmreg.list()` lists discovered instances across instance files and UIO sysfs along with whether each device is present
+    * By-Name Register/Field Access, Access-Type Safety, Wide Registers & `dump`
+        * Case-insensitive register, group and field lookup (`d.CTRL.MODE` / `d.ctrl.mode`), register and group arrays (`d.DEBOUNCE[3].CYCLES = 10`, `d.CH[0].CFG`), single-field registers (`d.IN`), `d.define("SCRATCH", at=0x40, ...)`, and `d.wait_irq(timeout=1.0)`
+        * Enumeration encoding on write (`d.CTRL.MODE = "OPEN_DRAIN"`) and decoding on read/print (`EnumValue(int)` comparing equal to both the integer value and the enum name)
+        * Access-type enforcement (`sw`, `onwrite`, `onread`, `singlepulse`): masked field RMW under the device lock writes `0` to other `woclr`/`woset`/`wot`/`r`/`w`/`w1`/`singlepulse` fields, `1` to other `wzc`/`wzs`/`wzt` fields, and preserves `rw`/`rw1`/`na`/unmodeled bits; refuses field RMW on registers containing plain `sw: "w"`/`"w1"` (`[E_WRITE_ONLY]`) or `wclr`/`wset` (`[E_RMW_UNSAFE]`) fields; requires `side_effects=True` to read or field-modify `rclr`/`rset` registers (`[E_READ_SIDE_EFFECT]`); refuses writes to `sw: "r"` (`[E_READ_ONLY]`), reads of `sw: "w"` (`[E_WRITE_ONLY]`, except `singlepulse` which reads `0`), and any access to `sw: "na"` (`[E_ACCESS_DENIED]`)
+        * Wide registers (`regwidth > accesswidth`) split across `regwidth / accesswidth` bus words under one `with dev.lock():` guard, reading lowest address first and writing highest address first by default (`"word_order": "lo_first"` writes lowest address first)
+        * `d.dump(diff_reset=False, side_effects=False)` formats all registers with decoded fields, skipping `rclr`/`rset` registers with a note unless `side_effects=True`
+    * CLI Validator (`bindings/python/mmreg/__main__.py`)
+        * `python -m mmreg check <file.json> [...]` validates block and instance files (including cross-file duplicate instance checks) without hardware access for generators' CI
+    * Documentation & Packaging
+        * Froze the `mmreg-block/1` specification in `docs/users/07-block-files.md`, added the new error codes to `docs/users/06-troubleshooting.md`, and updated the Yocto recipe in `docs/users/02-installation.md` (`mmreg_1.3.0.bb`) to install all `bindings/python/mmreg/*.py` modules and `python3-json`

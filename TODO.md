@@ -46,7 +46,7 @@ cover, build environments, testing without hardware):
 | 1.0.x | fixes only | — |
 | **1.1** | `Device` (UIO by name, shared handle, sequence guard, IRQ), 8–64-bit access, warnings API | `devmem`; UIO helper libraries **for Rust users** |
 | **1.2** | C ABI and Python binding (offset access, locks, IRQ, inline `define()`) | UIO helper libraries **for C / Python users** |
-| 1.3 | Python by name: block files, field decoding, access-type safety, `dump` | hand-decoded register dumps |
+| **1.3** | Python by name: block files, field decoding, access-type safety, `dump` | hand-decoded register dumps |
 | 1.4 | CLI tools: block read, `watch`, `irq`, JSON output; SVD importer (Python) | ad-hoc polling scripts |
 
 **Versioning follows [SemVer](https://semver.org/).** 1.0.0 is the first stable API: everything
@@ -200,23 +200,22 @@ profile checks read registers by physical address too, so outside UIO regions th
 
 ## 1.3 — Python by name (block files, debug and experiments)
 
-Specification: [docs/users/07-block-files.md](docs/users/07-block-files.md) (draft; freeze when
-this version ships). Everything here is in the Python package; the Rust crate, C library and CLI
-do not change.
+Specification: [docs/users/07-block-files.md](docs/users/07-block-files.md). Everything here is in
+the Python package; the Rust crate, C library and CLI do not change.
 
-- [ ] **Loader and validation:** JSON with the standard library; strict keys with the `x-` escape,
+- [x] **Loader and validation:** JSON with the standard library; strict keys with the `x-` escape,
   version check, overlap / alignment / bounds / enum checks, `dim` expansion, case-insensitive
   unique names. Every error names the file, register and field.
-- [ ] **Name resolution:** instance files, then UIO name → `of_node/compatible` → block file, with
+- [x] **Name resolution:** instance files, then UIO name → `of_node/compatible` → block file, with
   the search paths of the spec. `mmreg.list()` shows the instances found and whether their device
   is present.
-- [ ] **Access by name:** `d.CTRL`, `d.CTRL.ENABLE = 1`, enum names, arrays (`d.DATA[3]`),
+- [x] **Access by name:** `d.CTRL`, `d.CTRL.ENABLE = 1`, enum names, arrays (`d.DATA[3]`),
   `d.dump(diff_reset=True)`; registers print decoded.
-- [ ] **Access-type rules** from the spec (write only what was asked, no read side effects without
+- [x] **Access-type rules** from the spec (write only what was asked, no read side effects without
   `side_effects=True`, refused accesses).
-- [ ] **Wide registers** (`regwidth` > `accesswidth`): word order from the spec, under one lock.
-- [ ] **Instance checks** run like a safety profile before first access.
-- [ ] **`python -m mmreg check <file>`** for generators' CI (validate, no hardware access).
+- [x] **Wide registers** (`regwidth` > `accesswidth`): word order from the spec, under one lock.
+- [x] **Instance checks** run like a safety profile before first access.
+- [x] **`python -m mmreg check <file>`** for generators' CI (validate, no hardware access).
 
 ## 1.4 — CLI and Python tools
 

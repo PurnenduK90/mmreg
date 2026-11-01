@@ -45,19 +45,29 @@ raises `MmregError` `E_LIB_LOAD`.
 Runs anywhere: `mock=True` backs the device with memory instead of hardware.
 
 ```python
+import mmreg
 from mmreg import Device
 
 with Device.open_addr(0x4000_0000, 0x100, force=True, mock=True) as d:
     d.write_u32(0x00, 0x1)
     d.update_u32(0x00, 0xF0, 0x5 << 4)          # locked read-modify-write
 
-    d.define("CTRL", offset=0x00, fields={"EN": "0", "MODE": "7:4"})
+    d.define("CTRL", at=0x00, fields={"EN": "0", "MODE": "7:4"})
     d.CTRL.EN = True
     print(hex(int(d.CTRL)), int(d.CTRL.MODE))  # 0x51 5
 ```
 
-On hardware, open by UIO name: `Device.open_uio("axi_gpio")`. More in
-[`examples/`](https://github.com/PurnenduK90/mmreg/tree/main/bindings/python/examples) and the
+With an [`mmreg-block/1` block file](https://github.com/PurnenduK90/mmreg/blob/main/docs/users/07-block-files.md),
+open by instance or UIO name (`mmreg.open("gpio0")`): registers decode their fields and enumerations,
+enforce access rules (`sw`, `onwrite`, `onread`, `singlepulse`, wide registers), and `d.dump(diff_reset=True)`
+prints every readable register without triggering `rclr` / `rset` read side effects. Validate block
+and instance files in CI without hardware via:
+
+```sh
+python3 -m mmreg check path/to/block.json
+```
+
+More in [`examples/`](https://github.com/PurnenduK90/mmreg/tree/main/bindings/python/examples) and the
 [Python section of the library guide](https://github.com/PurnenduK90/mmreg/blob/main/docs/users/04-library-usage.md#9-python-binding-bindingspythonmmreg).
 
 ## Errors

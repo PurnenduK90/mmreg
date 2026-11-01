@@ -8,7 +8,8 @@ hardware, open the device with `Device.open_uio("<uio name>")` instead (see `uio
 
 import copy
 
-from mmreg import Device, MmregError
+import mmreg
+from mmreg import Block, Device, MmregError
 
 
 def main() -> None:
@@ -52,6 +53,38 @@ def main() -> None:
                 bad()
             except MmregError as err:
                 print(f"[{err.code}]")
+
+    # Block-backed access by name (`mmreg-block/1.0`): enum decoding, access-type safety, and dump.
+    block = Block.from_dict(
+        {
+            "format": "mmreg-block/1.0",
+            "compatible": "acme,gpio-1.0",
+            "enum": {
+                "mode_e": {
+                    "PUSH_PULL": {"value": 0},
+                    "OPEN_DRAIN": {"value": 1},
+                }
+            },
+            "gpio": {
+                "size": "0x100",
+                "CTRL": {
+                    "at": "0x00",
+                    "EN": {"bits": "0"},
+                    "MODE": {"bits": "2:1", "encode": "mode_e"},
+                    "RESTART": {"bits": "3", "sw": "w", "singlepulse": True},
+                },
+                "FIFO": {
+                    "at": "0x04",
+                    "DATA": {"bits": "7:0", "onread": "rclr"},
+                },
+            },
+        }
+    )
+    with mmreg.open(block=block, at=0x4000_0000, force=True, mock=True) as d:
+        d.CTRL.EN = 1
+        d.CTRL.MODE = "OPEN_DRAIN"
+        print(d.CTRL)
+        print(d.dump(diff_reset=True))
 
 
 if __name__ == "__main__":

@@ -76,6 +76,14 @@ These codes come from the C ABI (`mmreg_last_error_code()`) and the Python packa
 | `E_INTERNAL_PANIC` | A bug in mmreg panicked inside a C ABI call; the panic was caught at the boundary. | Report it with the message; the handle is still valid but the failed call had no effect or an unknown one. |
 | `E_LIB_LOAD` | Python: `libmmreg` was not found, cannot be loaded (built for another CPU or C library), or has a different major version than the package. The error is also an `OSError`. | Install a wheel that bundles the library, install `libmmreg.so`, or set `MMREG_LIB_PATH`; see [Installation](02-installation.md#python-package). |
 | `E_NOT_COPYABLE` | Python: `copy.copy`, `copy.deepcopy` or `pickle` of a `Device`, which owns its C handle. The error is also a `TypeError`. | Share the `Device` object instead of copying it. |
+| `E_BLOCK_VERSION` | Python: `format` in a block or instance file is not a supported `mmreg-block/1.<minor>` or `mmreg-instances/1.<minor>`. | Upgrade `mmreg` or generate a `1.0` file; see [Block Files](07-block-files.md#versioning). |
+| `E_BLOCK_PARSE` | Python: invalid JSON, unknown property key or value, misaligned register, overlapping registers or fields, out-of-bounds offset or bit range, or invalid enum in a block or instance file. | Fix the file, register and field named in the message (`python -m mmreg check <file.json>`). |
+| `E_BLOCK_NOT_FOUND` | Python: block or instance file cannot be found on the search path (`$MMREG_BLOCKS`, `/etc/mmreg/blocks`, `/usr/share/mmreg/blocks`). The error is also an `OSError`. | Install the `<compatible>.json` block file or set `MMREG_BLOCKS`. |
+| `E_INSTANCE_DUPLICATE` | Python: two instance files define the same instance name. | Remove or rename the duplicate entry named in the message. |
+| `E_WRITE_ONLY` | Python: reading a write-only (`sw: "w"` / `"w1"`) register or field, or attempting a field read-modify-write on a register containing a plain write-only field. | Write the whole register (`d.R = value`) instead of reading or modifying a single field. |
+| `E_RMW_UNSAFE` | Python: attempting a field read-modify-write on a register containing a `wclr` or `wset` field, which any write modifies. | Write the whole register (`d.R = value`). |
+| `E_READ_SIDE_EFFECT` | Python: reading or field-modifying a register with `onread: "rclr"` or `"rset"` without `side_effects=True`. | Pass `side_effects=True` (`d.R.read(side_effects=True)` or `d.R.F.write(v, side_effects=True)`), or write the whole register. |
+| `E_ACCESS_DENIED` | Python: reading or writing a reserved (`sw: "na"`) field or register. | Do not access reserved fields. |
 | `E_UNKNOWN` | Python: a C call failed without setting an error code (should not happen). | Report it. |
 
 In Python every exception the package raises is an `MmregError`. A missing register or field is

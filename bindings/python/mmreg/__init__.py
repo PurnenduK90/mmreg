@@ -8,26 +8,39 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import math
 import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 import operator
-from typing import Dict, Iterable, List, NoReturn, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, NoReturn, Optional, Set, Tuple, Union
 
 __all__ = [
+    "Block",
+    "BlockField",
+    "BlockRegister",
+    "BlockRegisterArray",
+    "BlockRegisterGroup",
+    "BlockRegisterGroupArray",
     "Device",
+    "EnumValue",
     "InlineField",
     "InlineRegister",
+    "InstanceInfo",
+    "InstanceList",
     "LockGuard",
     "MmregError",
     "MMREG_O_FORCE",
     "MMREG_O_MOCK",
     "MMREG_O_RDONLY",
+    "check",
     "find_uio",
+    "list",
+    "open",
 ]
 
-__version__ = "1.2.2"
+__version__ = "1.3.0"
 
 MMREG_O_RDONLY: int = 1 << 0
 MMREG_O_FORCE: int = 1 << 1
@@ -401,6 +414,7 @@ class InlineRegister:
         object.__setattr__(self, "_device", device)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "offset", int(offset))
+        object.__setattr__(self, "at", int(offset))
         if fields is None:
             fields = {}
         if not isinstance(fields, Mapping):
@@ -416,10 +430,18 @@ class InlineRegister:
                 f"[E_SUBREG_NOT_FOUND] w1c field(s) {unknown} not defined in register '{name}'.",
             )
         parsed_fields: Dict[str, InlineField] = {}
+        parsed_fields_upper: Dict[str, InlineField] = {}
         used_mask = 0
         w1c_mask = 0
         for field_name, spec in fields.items():
             _check_attr_name(field_name, InlineRegister, f"Field name in register '{name}'")
+            up_name = field_name.upper()
+            if up_name in parsed_fields_upper:
+                raise MmregError(
+                    "E_INVALID_ARG",
+                    f"[E_INVALID_ARG] Field names '{parsed_fields_upper[up_name].name}' and '{field_name}' "
+                    f"in register '{name}' differ only by case.",
+                )
             msb, lsb = _parse_bit_spec(spec)
             field = InlineField(device, name, int(offset), field_name, msb, lsb, w1c=field_name in w1c_names)
             if field.mask & used_mask:
@@ -431,9 +453,11 @@ class InlineRegister:
             if field.w1c:
                 w1c_mask |= field.mask
             parsed_fields[field_name] = field
+            parsed_fields_upper[up_name] = field
         for field in parsed_fields.values():
             field._other_w1c_mask = w1c_mask & ~field.mask
         object.__setattr__(self, "_fields", parsed_fields)
+        object.__setattr__(self, "_fields_upper", parsed_fields_upper)
 
     def read(self) -> int:
         """Reads the 32-bit register from hardware."""
@@ -445,10 +469,15 @@ class InlineRegister:
 
     def _field(self, key: str) -> InlineField:
         fields: Optional[Dict[str, InlineField]] = self.__dict__.get("_fields")
-        if fields is None:
+        fields_upper: Optional[Dict[str, InlineField]] = self.__dict__.get("_fields_upper")
+        if fields is None or fields_upper is None:
             raise _no_attr(self, key)
-        if key in fields:
-            return fields[key]
+        if isinstance(key, str):
+            found = fields.get(key)
+            if found is None:
+                found = fields_upper.get(key.upper())
+            if found is not None:
+                return found
         avail = ", ".join(sorted(fields.keys()))
         raise _MmregAttributeError(
             "E_SUBREG_NOT_FOUND",
@@ -508,6 +537,9 @@ class Device:
         object.__setattr__(self, "_handle", handle)
         object.__setattr__(self, "_lib", lib)
         object.__setattr__(self, "_registers", {})
+        object.__setattr__(self, "_registers_upper", {})
+        object.__setattr__(self, "_block", None)
+        object.__setattr__(self, "_flat_block_registers", ())
 
     @classmethod
     def open_uio(
@@ -723,6 +755,11 @@ class Device:
         if lib.mmreg_irq_unmask(handle) != 0:
             _raise_last_error(lib)
 
+    @property
+    def block(self) -> Optional[Block]:
+        """The `Block` attached to this device, or `None` if opened without a block file."""
+        return self.__dict__.get("_block")
+
     def irq_wait(self, timeout_ms: Optional[int]) -> Optional[int]:
         """Waits up to `timeout_ms` ms (`None`: no timeout) for a UIO interrupt.
 
@@ -740,24 +777,57 @@ class Device:
         _raise_last_error(lib)
         return None
 
+    def wait_irq(self, timeout: Optional[float] = None) -> Optional[int]:
+        """Waits up to `timeout` seconds (`None`: no timeout) for a UIO interrupt."""
+        if timeout is None:
+            return self.irq_wait(None)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise MmregError(
+                "E_INVALID_ARG",
+                f"[E_INVALID_ARG] Timeout {timeout!r} must be a non-negative number of seconds or None.",
+            )
+        if math.isnan(timeout) or math.isinf(timeout) or timeout < 0:
+            raise MmregError(
+                "E_INVALID_ARG",
+                f"[E_INVALID_ARG] Timeout {timeout!r} must be a finite non-negative number of seconds.",
+            )
+        return self.irq_wait(int(math.ceil(timeout * 1000.0)))
+
+    def dump(self, *, diff_reset: bool = False, side_effects: bool = False) -> str:
+        """Returns a formatted multi-line dump of all registers on this device.
+
+        Registers with read side effects (`onread: "rclr"` or `"rset"`) are skipped and noted
+        unless `side_effects=True` is passed. When `diff_reset=True`, only registers whose value
+        differs from their reset value are included.
+        """
+        return format_device_dump(self, diff_reset=diff_reset, side_effects=side_effects)
+
     def define(
         self,
         name: str,
         *,
-        offset: int,
+        offset: Optional[int] = None,
+        at: Optional[int] = None,
         fields: Optional[Dict[str, Union[str, int, Tuple[int, int]]]] = None,
         w1c: Iterable[str] = (),
     ) -> InlineRegister:
-        """Defines an inline 32-bit register on this device.
+        """Defines an inline 32-bit register on this device (`offset=` or `at=`).
 
-        `d.define("ISR", offset=0xC, fields={"DONE": "0", "ERR": "1", "MODE": "7:4"}, w1c={"DONE", "ERR"})`
+        `d.define("ISR", at=0xC, fields={"DONE": "0", "ERR": "1", "MODE": "7:4"}, w1c={"DONE", "ERR"})`
         marks `DONE` and `ERR` write-1-to-clear. Every field write is a masked read-modify-write
         that keeps the other fields and writes `0` to the other `w1c` bits: `d.ISR.DONE = 1` clears
         only `DONE` and keeps `MODE`. List write-1-to-pulse (self-clearing) bits in `w1c` too.
         """
         self._require_handle()
         _check_attr_name(name, Device, "Register name")
-        checked_offset = _check_uint(offset, 32, "Offset")
+        if (offset is None) == (at is None):
+            raise MmregError(
+                "E_INVALID_ARG",
+                f"[E_INVALID_ARG] Specify exactly one of `offset=` or `at=` for register '{name}'.",
+            )
+        raw_offset = offset if offset is not None else at
+        assert raw_offset is not None
+        checked_offset = _check_uint(raw_offset, 32, "Offset")
         base_addr = self.base_address
         region_size = self.size
         if checked_offset % 4 != 0 or (base_addr + checked_offset) % 4 != 0:
@@ -770,25 +840,68 @@ class Device:
                 "E_OUT_OF_BOUNDS",
                 f"[E_OUT_OF_BOUNDS] Register '{name}' at offset 0x{checked_offset:X} (4 bytes) exceeds window size 0x{region_size:X}.",
             )
+        regs_upper: Dict[str, Any] = self._registers_upper
+        up_name = name.upper()
+        if up_name in regs_upper and regs_upper[up_name].name != name:
+            raise MmregError(
+                "E_INVALID_ARG",
+                f"[E_INVALID_ARG] Register name '{name}' conflicts case-insensitively with '{regs_upper[up_name].name}'.",
+            )
         reg = InlineRegister(self, name, checked_offset, fields, w1c)
         self._registers[name] = reg
+        regs_upper[up_name] = reg
         return reg
 
-    def __getattr__(self, item: str) -> InlineRegister:
+    def _lookup_reg(self, key: str) -> Any:
+        regs: Optional[Dict[str, Any]] = self.__dict__.get("_registers")
+        regs_upper: Optional[Dict[str, Any]] = self.__dict__.get("_registers_upper")
+        if regs is not None and isinstance(key, str):
+            found = regs.get(key)
+            if found is None and regs_upper is not None:
+                found = regs_upper.get(key.upper())
+            if found is not None:
+                return found
+        return None
+
+    def __getattr__(self, item: str) -> Any:
         _reject_private_attr(self, item)
-        regs: Optional[Dict[str, InlineRegister]] = self.__dict__.get("_registers")
-        if regs is not None and item in regs:
-            return regs[item]
+        found = self._lookup_reg(item)
+        if found is not None:
+            return found
         raise _no_attr(self, item)
 
     def __setattr__(self, key: str, value: object) -> None:
-        regs: Optional[Dict[str, InlineRegister]] = self.__dict__.get("_registers")
-        if regs is not None and key in regs:
-            if isinstance(value, InlineRegister):
-                return
-            regs[key].write(value)  # type: ignore[arg-type]
-            return
+        if not key.startswith("_"):
+            found = self._lookup_reg(key)
+            if found is not None:
+                if isinstance(value, (InlineRegister, BlockRegister)):
+                    return
+                if hasattr(found, "write"):
+                    found.write(value)
+                    return
+                raise MmregError(
+                    "E_INVALID_ARG",
+                    f"[E_INVALID_ARG] Cannot assign directly to register array or group '{key}'.",
+                )
         object.__setattr__(self, key, value)
+
+    def __getitem__(self, key: str) -> Any:
+        found = self._lookup_reg(key)
+        if found is not None:
+            return found
+        raise _no_attr(self, key)
+
+    def __setitem__(self, key: str, value: object) -> None:
+        found = self._lookup_reg(key)
+        if found is None:
+            raise _no_attr(self, key)
+        if hasattr(found, "write"):
+            found.write(value)
+            return
+        raise MmregError(
+            "E_INVALID_ARG",
+            f"[E_INVALID_ARG] Cannot assign directly to register array or group '{key}'.",
+        )
 
 
 def _no_attr(obj: object, item: str) -> _MmregAttributeError:
@@ -844,3 +957,20 @@ def _build_flags(*, region: int, read_only: bool, force: bool, mock: bool) -> in
     if mock:
         flags |= MMREG_O_MOCK
     return flags
+
+
+from .block import (  # noqa: E402
+    Block,
+    BlockField,
+    BlockRegister,
+    BlockRegisterArray,
+    BlockRegisterGroup,
+    BlockRegisterGroupArray,
+    EnumValue,
+    InstanceInfo,
+    InstanceList,
+    check_file as check,
+    format_device_dump,
+    list_instances as list,
+    open_device as open,
+)

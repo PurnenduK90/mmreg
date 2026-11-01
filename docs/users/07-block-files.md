@@ -1,9 +1,5 @@
 # 7. Block Files (`mmreg-block/1`)
 
-> [!NOTE]
-> **Draft specification, not implemented yet** (planned for 1.3, see [TODO](../../TODO.md)).
-> Comments on the format are welcome until it ships; after that, `/1` only changes additively.
-
 A block file describes one IP block: its registers, bitfields, enumerations, and how each field
 behaves on read and write. The **mmreg Python package** reads block files to give register access
 by name for debugging, bring-up and experiments:
@@ -275,12 +271,13 @@ instance name is an error (`[E_INSTANCE_DUPLICATE]`).
 
 ## Python API
 
-Planned shape (1.3); the package talks to the hardware through `libmmreg` (1.2), so its locking
-and interrupt handling are the same as for C and Rust programs.
+The package talks to the hardware through `libmmreg`, so its locking and interrupt handling are the
+same as for C and Rust programs.
 
 ```python
 import mmreg
 
+print(mmreg.list())                        # discovered instances and whether their device is present
 d = mmreg.open("gpio0")                    # or mmreg.open(block="acme,gpio-1.0", uio="gpio0")
 d.CTRL                                     # register: read, decoded on print
 d.CTRL.MODE                                # field value (enum name when it has one)

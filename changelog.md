@@ -180,5 +180,7 @@
         * `Device::read_block(offset, width, &mut [u64])`: reads consecutive words after checking the whole range, holding one lock per page (of the kernel's page size, or the UIO device lock) across the words in that page
     * Python `watch()` (`bindings/python/mmreg/`)
         * `d.watch(*targets, interval=0.1, count=None, only_volatile=False, side_effects=False, file=None)` on `Device`, plus `.watch(...)` on every register and field (`BlockRegister`, `BlockField`, `InlineRegister`, `InlineField`): polls registers or fields by name (`"CTRL"`, `"IRQ_STATUS.CHANGE"`, `"DEBOUNCE[2].CYCLES"`) or object every `interval` seconds (at least 1 ms, like the CLI) until `count` polls or Ctrl-C, skipping `rclr`/`rset` registers unless `side_effects=True`, and printing initial values and changes (`old -> new`) formatted as `dump` formats them (`~` marks volatile fields); it keeps only each target's last value, so memory stays constant however long it runs
+    * Documentation
+        * `docs/users/07-block-files.md`: `"reset": "x"` means no reset value (unknown after reset), left out of `dump(diff_reset=True)`; the `mmreg-block/1.0` loader always accepted it, and register generators (Bitforge) write it
     * Repository
         * `.gitattributes` (`* text=auto eol=lf`): the 1.3.1 / 1.3.2 commits stored 13 files (Python modules and tests, docs, `TODO.md`, `ci.yml`, `justfile`) with CRLF line endings written by Windows tools; a CRLF `justfile` breaks its `#!/usr/bin/env bash` recipes (`python-wheel`, `python-wheel-test`) on Linux. All are LF again

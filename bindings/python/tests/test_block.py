@@ -677,6 +677,29 @@ class TestNamesChecksAndBinding(unittest.TestCase):
             self.assertIn("(EN=0, MODE=PUSH_PULL, RESTART=0)", dump)
             self.assertTrue(dump.endswith("SCRATCH @ 0x80 = 0x0000_0003  (LO=3)"))
 
+    def test_unknown_reset_x_is_left_out_of_diff_reset(self) -> None:
+        blk = Block.from_dict(
+            {
+                "format": "mmreg-block/1.0",
+                "compatible": "t",
+                "b": {
+                    "size": "0x10",
+                    "R": {"at": "0x0", "A": {"bits": "7:0", "reset": "x"}, "B": {"bits": "15:8", "reset": "0x1"}},
+                    "S": {"at": "0x4", "reset": "x"},
+                },
+            }
+        )
+        with mmreg.open(block=blk, at=0x4000_0000, force=True, mock=True) as d:
+            self.assertEqual(d.R.reset, 0x100)  # only B has a reset value
+            self.assertIsNone(d.S.reset)
+            self.assertIsNone(d.R.A.reset)
+            d.R = 0x1A5  # A is unknown after reset, B is at its reset value
+            self.assertNotIn("R @", d.dump(diff_reset=True))
+            d.R.B = 2
+            self.assertIn("R @ 0x00 = 0x0000_02a5", d.dump(diff_reset=True))
+            # A register without any reset value is always listed.
+            self.assertIn("S @ 0x04", d.dump(diff_reset=True))
+
     def test_example_files_are_valid(self) -> None:
         files = sorted(str(p) for p in EXAMPLES.glob("*/*.json"))
         self.assertEqual(len(files), 2)

@@ -137,7 +137,7 @@ register without fields is one field covering all its bits.
 | `onread` | | Read side effect: `rclr`, `rset` |
 | `singlepulse` | `false` | With `sw: "w"`: writing 1 makes a one-cycle pulse; the field reads 0 |
 | `hw` | `"r"` | Hardware access; `w` / `rw` means hardware changes the value (status, counters): shown as volatile, a `~` after the name (`CHANGE~=1`), by `dump`, `print(d.R)` and `watch` |
-| `reset` | `0` | Reset value; `dump(diff_reset=True)` compares against it |
+| `reset` | `0` | Reset value; `dump(diff_reset=True)` compares against it. `"x"`: no reset value (unknown after reset); the field is left out of that comparison |
 | `encode` | | Name of an enumeration in `enum` |
 | `desc`, `name` | | Description, display name |
 

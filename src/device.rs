@@ -467,12 +467,12 @@ impl Device {
         let step = width.bytes();
         self.check_access(offset, width, false)?;
         // The last word's offset must fit the `u32` offsets of the mapper, and the end the window.
-        let last = out
+        let end = out
             .len()
             .checked_mul(step)
-            .and_then(|total| (offset as usize).checked_add(total - step));
-        match last {
-            Some(last) if u32::try_from(last).is_ok() && last + step <= self.size => {}
+            .and_then(|total| (offset as usize).checked_add(total));
+        match end {
+            Some(end) if u32::try_from(end - step).is_ok() && end <= self.size => {}
             _ => return Err(self.err_out_of_bounds(offset, out.len().saturating_mul(step))),
         }
         let page = page_size();

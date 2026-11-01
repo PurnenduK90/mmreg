@@ -216,12 +216,19 @@ impl CliBackend for HardwareBackend {
     ) -> Result<Vec<u64>, MmregError> {
         let (dev, offset) = Self::open_target(target, width, count, true, force)?;
         // Checked before allocating `count` words; `Device::read_block` checks the range again.
-        let available = dev.size().saturating_sub(offset as usize) / width.bytes();
+        let step = width.bytes();
+        let available = dev.size().saturating_sub(offset as usize) / step;
         if count > available {
+            if available == 0
+                || offset % (step as u32) != 0
+                || dev.base_address().wrapping_add(offset as u64) % (step as u64) != 0
+            {
+                dev.read(offset, width)?;
+            }
             return Err(MmregError::OutOfBoundsAccess {
                 register_name: dev.name().to_string(),
                 offset,
-                access_size: count * width.bytes(),
+                access_size: count * step,
                 region_size: dev.size(),
             });
         }

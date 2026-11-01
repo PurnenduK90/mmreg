@@ -59,8 +59,9 @@ with Device.open_addr(0x4000_0000, 0x100, force=True, mock=True) as d:
 
 With an [`mmreg-block/1` block file](https://github.com/PurnenduK90/mmreg/blob/main/docs/users/07-block-files.md),
 open by instance or UIO name (`mmreg.open("gpio0")`): registers decode their fields and enumerations,
-enforce access rules (`sw`, `onwrite`, `onread`, `singlepulse`, wide registers), and `d.dump(diff_reset=True)`
-prints every readable register without triggering `rclr` / `rset` read side effects. Validate block
+enforce access rules (`sw`, `onwrite`, `onread`, `singlepulse`, wide registers), `d.dump(diff_reset=True)`
+prints every readable register without triggering `rclr` / `rset` read side effects, and
+`d.watch(...)` polls registers or fields and prints transitions. Validate block
 and instance files in CI without hardware via:
 
 ```sh

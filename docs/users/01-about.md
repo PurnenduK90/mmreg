@@ -1,6 +1,6 @@
 # 1. About `mmreg`
 
-`mmreg` is a Rust library and command-line utility for **safe, concurrent 32-bit memory-mapped I/O (MMIO) register access** on Linux and embedded platforms (ARM, AArch64, x86_64, RISC-V, etc.).
+`mmreg` is a Rust, C, and Python library and command-line utility for **safe, concurrent 8/16/32/64-bit memory-mapped I/O (MMIO) register access** on Linux and embedded platforms (ARM, AArch64, x86_64, RISC-V, etc.).
 
 ---
 
@@ -29,7 +29,7 @@ Historically, tools like `devmem2` have been used for this purpose. However, raw
 | **1. Blueprint Validation** | `/sys/class/uio`, `/proc/iomem`, Device Tree `reg` | The range must be known to the running kernel, and must not be System RAM, kernel memory, reserved or ACPI memory. |
 | **2. Hardware Pre-Flight** | DT `status`, runtime PM, supplier links, `clk_summary`, FPGA manager | The owning peripheral must be enabled (`"okay"`), runtime-active, have active suppliers and ungated clocks, and—if on an FPGA fabric—a programmed (`"operating"`) FPGA. |
 | **3. Safe Backend Priority** | UIO (`/dev/uioN`) $\rightarrow$ `/dev/mem` (`debug`) | Prefers kernel-managed UIO mappings; raw `/dev/mem` requires the `debug` feature and holds the device runtime-active while mapped. |
-| **4. Concurrency & Bitfields** | Inter-process lock, aligned volatile access | Every access and read-modify-write holds an exclusive `flock` on `/dev/uioN` (UIO) or a per-page lock file (`/dev/mem`); `Register` / `SubRegister` give names to registers and bitfields. |
+| **4. Concurrency & Bitfields** | Inter-process lock, sequence guards, aligned volatile access | Every access, `update_u32` read-modify-write, and `dev.lock()` sequence holds an exclusive `flock` on `/dev/uioN` (UIO) or per-page lock files (`/dev/mem`); `Interface` and Python `mmreg-block/1` block files give names to registers and bitfields. |
 
 ---
 

@@ -9,8 +9,8 @@ the `mmreg` crate builds only as a Rust library.
 ```text
 src/
 ├── lib.rs         # Public exports; read_register_at / write_register_at
-├── main.rs        # CLI: argument parsing (--width, <uio-name> <offset>, --version), output
-├── device.rs      # Device, DeviceBuilder, uio::find: &self 8–64-bit access, sequence lock, UIO IRQs
+├── main.rs        # CLI: read (--count), write, watch, irq, --width, --format (hex|dec|bin|json), --version
+├── device.rs      # Device, DeviceBuilder, uio::find: &self 8–64-bit access, read_block, sequence lock, UIO IRQs
 ├── interface.rs   # Interface: named registers/subregisters layered on top of Device
 ├── register.rs    # Register and SubRegister (bitfield) definitions
 ├── error.rs       # MmregError: [E_*] codes and remediation messages
@@ -32,7 +32,7 @@ bindings/
 └── python/        # pure-Python ctypes package over libmmreg.so
     ├── mmreg/__init__.py    # Device, inline define(), errors, ctypes (`__version__`: the single version source)
     ├── mmreg/block.py       # block / instance file loader and validator (no hardware access)
-    ├── mmreg/_access.py     # registers, fields, arrays, groups bound to a Device on access; dump()
+    ├── mmreg/_access.py     # registers, fields, arrays, groups bound to a Device on access; dump(), watch()
     ├── mmreg/_resolve.py    # search paths, sysfs lookup, mmreg.open() / mmreg.list(), instance checks
     ├── mmreg/__main__.py    # `python -m mmreg check`
     ├── pyproject.toml, README.md   # pip packaging (`just python-wheel` bundles libmmreg.so), ruff rules

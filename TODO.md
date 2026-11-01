@@ -23,8 +23,8 @@ mmreg; mmreg depends on none of them. Hardware knowledge comes in two ways:
   Nothing is parsed at run time.
 - **Debug and experiments:** the Python package reads **block files**
   ([`mmreg-block/1`](docs/users/07-block-files.md), JSON) for access by name, field decoding and
-  access-type safety. A generator emits them as one more output, an importer converts CMSIS-SVD
-  (later IP-XACT), or a person defines registers inline in Python. The Rust core, C library and
+  access-type safety. A generator emits them as one more output, a person writes them, or
+  defines registers inline in Python. The Rust core, C library and
   CLI never parse them; the CLI works by address.
 
 Footprint stays a feature: mmreg competes with single-file `devmem2`. `libc` is the only mandatory
@@ -47,7 +47,7 @@ cover, build environments, testing without hardware):
 | **1.1** | `Device` (UIO by name, shared handle, sequence guard, IRQ), 8–64-bit access, warnings API | `devmem`; UIO helper libraries **for Rust users** |
 | **1.2** | C ABI and Python binding (offset access, locks, IRQ, inline `define()`) | UIO helper libraries **for C / Python users** |
 | **1.3** | Python by name: block files, field decoding, access-type safety, `dump` | hand-decoded register dumps |
-| 1.4 | CLI tools: block read, `watch`, `irq`, JSON output; SVD importer (Python) | ad-hoc polling scripts |
+| 1.4 | CLI tools: block read, `watch`, `irq`, JSON output | ad-hoc polling scripts |
 
 **Versioning follows [SemVer](https://semver.org/).** 1.0.0 is the first stable API: everything
 incompatible went in before it was tagged. Minor releases (1.1, 1.2, ...) only add: public enums
@@ -225,15 +225,14 @@ the Python package; the Rust crate, C library and CLI do not change.
   `--interval`).
 - [ ] **`irq <uio name> [timeout]` (CLI):** wait for a UIO interrupt from the shell.
 - [ ] **Output formats (CLI):** `--format hex|dec|bin|json` (JSON for scripts and agents).
-- [ ] **Importer (Python):** CMSIS-SVD → block files (`python -m mmreg import-svd`).
 
 ## Later
 
-- [ ] IP-XACT importer (Python).
 - [ ] MCP tool surface over the Python API (read/write/dump by name, with the same side-effect
   rules), for agents debugging hardware.
-- [ ] `mips*` / `powerpc-*-gnuspe` builds: no prebuilt Rust standard library, so only via nightly
-  `-Zbuild-std`; add if a user needs one.
+- [ ] On request only: CMSIS-SVD importer (Python, `python -m mmreg import-svd`) for a SoC whose
+  vendor ships SVD files; its access keys map one-to-one onto block files
+  ([Access Behaviour](docs/users/07-block-files.md#access-behaviour)).
 
 ---
 

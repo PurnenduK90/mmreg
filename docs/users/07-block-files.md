@@ -25,7 +25,7 @@ block file, define registers inline in Python (`d.define(...)`, see [Python API]
 
 The format belongs to `mmreg` and is tied to no register generator, description language or SoC.
 A generator emits it as one more output (dropping hardware-only keys such as ports and counters),
-an importer converts CMSIS-SVD (later IP-XACT), or a person writes it.
+or a person writes it.
 
 ---
 

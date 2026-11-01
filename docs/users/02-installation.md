@@ -74,10 +74,10 @@ in a checkout of this repository; a target CPU other than the host's needs
 [`cross`](https://github.com/cross-rs/cross):
 
 ```sh
-just python-wheel                                   # this machine: target/wheels/mmreg-1.2.1-py3-none-linux_x86_64.whl
+just python-wheel                                   # this machine: target/wheels/mmreg-1.2.2-py3-none-linux_x86_64.whl
 just python-wheel aarch64-unknown-linux-gnu         # Zynq UltraScale+, i.MX8, Raspberry Pi 4/5
 just python-wheel armv7-unknown-linux-gnueabihf     # Zynq-7000, Cyclone V SoC, i.MX6, STM32MP1
-pip install mmreg-1.2.1-py3-none-linux_aarch64.whl  # on the target
+pip install mmreg-1.2.2-py3-none-linux_aarch64.whl  # on the target
 ```
 
 The wheel carries a release `libmmreg.so` (UIO only, no `/dev/mem`) and a CPU tag, so `pip`
@@ -94,8 +94,8 @@ MMREG_LIB_PATH=$PWD/target/debug/libmmreg.so python3 bindings/python/examples/qu
 
 The package loads the first library it finds: `$MMREG_LIB_PATH`, the copy bundled in the package,
 `target/release` / `target/debug` of the repository it is imported from, `/usr/local/lib`,
-`/usr/lib`, then the system search path. A missing or incompatible library raises `MmregError`
-`E_LIB_LOAD` on first use.
+`/usr/lib`, `/usr/lib64`, then the system search path. A missing or incompatible library raises
+`MmregError` `E_LIB_LOAD` on first use.
 
 ---
 
@@ -130,9 +130,9 @@ You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) or Build
 | `mmreg` CLI (bring-up) | `--features debug` | Development / bring-up images (`devmem` replacement) |
 | Python `mmreg` (`bindings/python/mmreg`) | pure-Python (`ctypes` over `libmmreg.so`) | Development images or Python-enabled application images |
 
-### Option A: Building CLI, C Library, and Python Module from Source (`mmreg_1.2.1.bb`)
+### Option A: Building CLI, C Library, and Python Module from Source (`mmreg_1.2.2.bb`)
 
-Create `meta-custom/recipes-devtools/mmreg/mmreg_1.2.1.bb`:
+Create `meta-custom/recipes-devtools/mmreg/mmreg_1.2.2.bb`:
 
 ```bitbake
 SUMMARY = "Safe, concurrent 8/16/32/64-bit memory-mapped IO register access (Rust, C, Python, and CLI)"
@@ -141,8 +141,8 @@ LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://LICENSE.txt;md5=3914388ed65427d749c0c5886d2d12cf"
 
 SRC_URI = "git://github.com/PurnenduK90/mmreg.git;protocol=https;branch=main"
-# Pin the commit of the v1.2.1 tag: `${AUTOREV}` would drift away from the pinned `mmreg-crates.inc`.
-SRCREV = "<commit-sha-of-v1.2.1>"
+# Pin the commit of the v1.2.2 tag: `${AUTOREV}` would drift away from the pinned `mmreg-crates.inc`.
+SRCREV = "<commit-sha-of-v1.2.2>"
 S = "${WORKDIR}/git"
 
 inherit cargo cargo-update-recipe-crates python3-dir
@@ -153,7 +153,16 @@ require ${BPN}-crates.inc
 #   CARGO_BUILD_FLAGS:append = " --workspace --features debug"
 CARGO_BUILD_FLAGS:append = " --workspace"
 
+# Cargo.toml's release profile strips its outputs (`strip = true`), which fails the
+# `already-stripped` QA check. Let Yocto strip instead, which also fills ${PN}-dbg.
+export CARGO_PROFILE_RELEASE_STRIP = "false"
+
 do_install:append() {
+    # cargo_do_install also copies every top-level *.so and *.rlib into ${rustlibdir}; the library is
+    # installed under ${libdir} below and the Rust crate is not needed on the target.
+    rm -f ${D}${rustlibdir}/libmmreg.so ${D}${rustlibdir}/libmmreg.rlib
+    rmdir -p --ignore-fail-on-non-empty ${D}${rustlibdir}
+
     # Install C header, static/shared libraries, and pkg-config file into sysroot
     install -d ${D}${includedir}
     install -m 0644 ${S}/bindings/c/include/mmreg.h ${D}${includedir}/mmreg.h
@@ -169,12 +178,15 @@ do_install:append() {
 
     # Install pure-Python ctypes package (no C extension compilation needed)
     install -d ${D}${PYTHON_SITEPACKAGES_DIR}/mmreg
-    install -m 0644 ${S}/bindings/python/mmreg/__init__.py ${D}${PYTHON_SITEPACKAGES_DIR}/mmreg/__init__.py
+    install -m 0644 ${S}/bindings/python/mmreg/__init__.py ${S}/bindings/python/mmreg/py.typed \
+        ${D}${PYTHON_SITEPACKAGES_DIR}/mmreg/
 }
 
 PACKAGES =+ "${PN}-python"
 FILES:${PN}-python = "${PYTHON_SITEPACKAGES_DIR}/mmreg"
-RDEPENDS:${PN}-python = "${PN} python3-core"
+# `ctypes` is its own package in Yocto (python3-ctypes), not part of python3-core. ${PN} provides
+# libmmreg.so.1, which the package loads from ${libdir}.
+RDEPENDS:${PN}-python = "${PN} python3-core python3-ctypes"
 ```
 
 > [!TIP]
@@ -182,7 +194,7 @@ RDEPENDS:${PN}-python = "${PN} python3-core"
 > ```sh
 > bitbake -c update_recipe_crates mmreg
 > ```
-> In **Buildroot**, use `$(eval $(cargo-package))` with `MMREG_CARGO_BUILD_OPTS = --workspace` and install `libmmreg.a`, `bindings/c/include/mmreg.h`, and `bindings/c/mmreg.pc` into `$(STAGING_DIR)/usr`, and `libmmreg.so` as `libmmreg.so.1.2.1` with `libmmreg.so.1` and `libmmreg.so` symlinks into both `$(STAGING_DIR)/usr/lib` and `$(TARGET_DIR)/usr/lib` (the library's SONAME is `libmmreg.so.1`).
+> In **Buildroot**, use `$(eval $(cargo-package))` with `MMREG_CARGO_BUILD_OPTS = --workspace` and install `libmmreg.a`, `bindings/c/include/mmreg.h`, and `bindings/c/mmreg.pc` into `$(STAGING_DIR)/usr`, and `libmmreg.so` as `libmmreg.so.1.2.2` with `libmmreg.so.1` and `libmmreg.so` symlinks into both `$(STAGING_DIR)/usr/lib` and `$(TARGET_DIR)/usr/lib` (the library's SONAME is `libmmreg.so.1`).
 
 ### Option B: Pre-Built Binary Recipe (For Older Yocto / PetaLinux Toolchains)
 

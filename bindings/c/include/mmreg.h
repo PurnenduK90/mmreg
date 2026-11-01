@@ -17,7 +17,7 @@ extern "C" {
 /** Version of the API this header describes; compare with `mmreg_version()` at run time. */
 #define MMREG_VERSION_MAJOR 1
 #define MMREG_VERSION_MINOR 2
-#define MMREG_VERSION_PATCH 1
+#define MMREG_VERSION_PATCH 2
 
 /**
  * Opaque handle to a mapped peripheral register window (UIO or /dev/mem).

@@ -34,7 +34,7 @@ The first match wins:
 1. `MMREG_LIB_PATH` (full path to a `libmmreg.so`)
 2. `libmmreg.so.1` / `libmmreg.so` next to the package (the bundled copy)
 3. `target/release/` and `target/debug/` of the repository the package is imported from
-4. `/usr/local/lib`, `/usr/lib`, then the system search path (`ctypes.util.find_library`)
+4. `/usr/local/lib`, `/usr/lib`, `/usr/lib64`, then the system search path (`ctypes.util.find_library`)
 
 The library is loaded on first use (`find_uio`, `Device.open_*`). If none is found, it cannot be
 loaded (e.g. built for another CPU), or its major version differs from the package's, that call

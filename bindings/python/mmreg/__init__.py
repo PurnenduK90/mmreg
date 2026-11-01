@@ -27,7 +27,7 @@ __all__ = [
     "find_uio",
 ]
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 MMREG_O_RDONLY: int = 1 << 0
 MMREG_O_FORCE: int = 1 << 1
@@ -135,6 +135,7 @@ def _candidate_library_paths() -> List[Path]:
         repo_root / "target" / "debug",
         Path("/usr/local/lib"),
         Path("/usr/lib"),
+        Path("/usr/lib64"),  # multilib Yocto images (libdir = /usr/lib64)
     ]
     for directory in search_dirs:
         for name in names:

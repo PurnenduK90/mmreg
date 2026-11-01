@@ -12,6 +12,15 @@ The `mmreg` crate provides three levels of API:
 Every fallible call returns `Result<_, MmregError>`, and the library never writes to `stderr`
 (non-fatal pre-flight warnings are returned via `dev.warnings()` / `iface.warnings()`).
 
+**Runnable examples.** `just test` runs the mock-device examples and compiles the hardware
+examples, so they stay in step with the API:
+
+| | Mock device (runs anywhere) | UIO interrupt loop (hardware) |
+| :--- | :--- | :--- |
+| Rust | [`examples/mock_quickstart.rs`](../../examples/mock_quickstart.rs): `cargo run --example mock_quickstart` | [`examples/uio_irq.rs`](../../examples/uio_irq.rs): `cargo run --example uio_irq -- <uio name>` |
+| C | [`bindings/c/examples/quickstart.c`](../../bindings/c/examples/quickstart.c) | [`bindings/c/examples/uio_irq.c`](../../bindings/c/examples/uio_irq.c) |
+| Python | [`bindings/python/examples/quickstart.py`](../../bindings/python/examples/quickstart.py) | [`bindings/python/examples/uio_irq.py`](../../bindings/python/examples/uio_irq.py) |
+
 ---
 
 ## 1. `Device`: Opening by UIO Name, Path, or Address
@@ -111,6 +120,10 @@ timeout-aware interrupt waiting (`poll(POLLIN)` + 4-byte `read`) and unmasking (
 use mmreg::{Device, MmregError};
 use std::time::Duration;
 
+const IRQ_STATUS: u32 = 0x0C;
+const IRQ_STATUS_W1C_MASK: u32 = 0x0000_0003; // DONE (bit 0) and ERR (bit 1) are write-1-to-clear
+const IRQ_STATUS_DONE: u32 = 0x0000_0001;
+
 fn handle_next_irq(dev: &Device) -> Result<(), MmregError> {
     // 1. Ensure the interrupt line is unmasked in the UIO driver
     dev.irq_unmask()?;
@@ -121,7 +134,8 @@ fn handle_next_irq(dev: &Device) -> Result<(), MmregError> {
 
         // 3. IMPORTANT (level-triggered interrupts): clear the interrupt cause in the
         //    device's own status register FIRST, before unmasking the kernel IRQ line!
-        dev.write_u32(0x0C, 0x0000_0001)?; // e.g. write-1-to-clear (W1C) IRQ status bit
+        //    Masked write: clears DONE only, keeps any rw bits, leaves a pending ERR alone.
+        dev.update_u32(IRQ_STATUS, IRQ_STATUS_W1C_MASK, IRQ_STATUS_DONE)?;
 
         // 4. Re-enable the interrupt line for the next event
         dev.irq_unmask()?;
@@ -158,6 +172,7 @@ pub mod regs {
     pub const IRQ_STATUS: u32 = 0x08;       // W1C register
     pub const IRQ_STATUS_DONE_MASK: u32 = 0x0000_0001;
     pub const IRQ_STATUS_ERR_MASK: u32 = 0x0000_0002;
+    pub const IRQ_STATUS_W1C_MASK: u32 = 0x0000_0003; // all W1C bits, for masked writes
 }
 
 #[inline]
@@ -173,22 +188,32 @@ pub const fn field_prep(field_val: u32, mask: u32, shift: u32) -> u32 {
 
 ### Access-Type Rules for Code Generators
 
-When a register generator emits helper functions or macros to write individual bitfields on top of
-`Device`, it **must** choose the write strategy according to the field's hardware access type:
+A bus write always carries the whole register: `write_u32(OFFSET, 1 << 8)` writes `0` to the other
+31 bits. When a register generator emits helper functions or macros to write individual bitfields
+on top of `Device`, every field writer is therefore a **masked read-modify-write** under the device
+lock, whatever the field's access type:
 
-| Field Access Type | Hardware Semantics | Required Generated Writer Pattern |
+```rust
+// REG_W1C_MASK: every write-1-to-clear and write-1-to-pulse bit of the register (0 if none).
+dev.update_u32(OFFSET, FIELD_MASK | REG_W1C_MASK, (val << SHIFT) & FIELD_MASK)?;
+```
+
+| Field Access Type | Hardware Semantics | What the masked write does |
 | :--- | :--- | :--- |
-| **`rw`** (Read-Write) in a pure-`rw` register | Retains written value | **Locked RMW:** `dev.update_u32(OFFSET, FIELD_MASK, (val << SHIFT) & FIELD_MASK)` |
-| **`wo`** (Write-Only) | Reading returns `0` or bus error | **Direct write (no read):** `dev.write_u32(OFFSET, (val << SHIFT) & FIELD_MASK)` |
-| **`w1c` / `rw1c`** (Write-1-to-Clear) | Writing `1` clears the bit; writing `0` has no effect | **Direct write (never RMW!):** `dev.write_u32(OFFSET, (val << SHIFT) & FIELD_MASK)` |
-| **`w1p`** (Write-1-to-Pulse / self-clearing trigger) | Writing `1` triggers a one-cycle pulse; writing `0` is a no-op | **Direct write (never RMW!):** `dev.write_u32(OFFSET, (val << SHIFT) & FIELD_MASK)` |
-| **`rw`** field sharing a register with **`w1c`** fields | Reading returns `1` on pending `w1c` bits | **Masked RMW:** clear both `FIELD_MASK` and all `W1C_MASK` bits so pending `w1c` bits are written back as `0`: `dev.update_u32(OFFSET, FIELD_MASK \| REG_W1C_MASK, (val << SHIFT) & FIELD_MASK)` |
+| **`rw`** (Read-Write) | Retains written value | Writes the field; other `rw` and reserved bits keep their value |
+| **`w1c` / `rw1c`** (Write-1-to-Clear) | Reads `1` while pending; writing `1` clears, `0` has no effect | Writes `1` to this bit only; other `w1c` bits are written `0` and stay pending; `rw` bits are kept |
+| **`w1p`** (Write-1-to-Pulse / self-clearing trigger) | Writing `1` triggers a pulse; writing `0` is a no-op | Pulses this bit only; `rw` configuration in the same register is kept |
+| **`wo`** (Write-Only register) | Reading returns `0` or bus error | Cannot be read, so cannot be read-modify-written: write the **whole register** with every field's value (`dev.write_u32(OFFSET, value)`) |
+
+Clearing `T0INT` (bit 8, `w1c`) in an AXI Timer `TCSR0` with a direct `write_u32(TCSR0, 1 << 8)`
+would also write `ENT0 = 0` and stop the timer; `update_u32(TCSR0, TCSR0_W1C_MASK, 1 << 8)` clears
+only the interrupt.
 
 > [!CAUTION]
-> Never emit a plain read-modify-write (`update_u32(OFFSET, FIELD_MASK, ...)`) to clear a `w1c`
-> interrupt status bit or to modify an `rw` field in a register that also contains `w1c` bits:
-> reading the register and writing back the unmodified bits writes `1` to every other asserted `w1c`
-> bit in that register, silently acknowledging and losing concurrent hardware events.
+> Put **every** `w1c` / `w1p` bit of the register in the mask, not just the field being written:
+> `update_u32(OFFSET, FIELD_MASK, ...)` reads pending `w1c` bits as `1` and writes them back,
+> silently acknowledging and losing concurrent hardware events. Registers with read side effects
+> (read-to-clear status, FIFO data) must not be read-modify-written: write them as a whole register.
 
 ---
 
@@ -244,6 +269,12 @@ fn main() -> Result<(), MmregError> {
     Ok(())
 }
 ```
+
+> [!WARNING]
+> `SubRegister` has no access type: `write_subregister` masks only the field being written, so in a
+> register that also holds write-1-to-clear bits it writes pending ones back as `1` and clears them.
+> For such registers use `Device::update_u32` with all of the register's `w1c` bits in the mask
+> (see [Access-Type Rules](#access-type-rules-for-code-generators)).
 
 ---
 
@@ -318,9 +349,14 @@ protocol and pre-flight validation.
 # Build static (`libmmreg.a`) and shared (`libmmreg.so`) libraries
 cargo build --release -p mmreg-capi
 
-# Link statically without Cargo at link time (or via `pkg-config --cflags --libs --static mmreg`)
+# Link statically without Cargo at link time (or via `pkg-config --cflags --libs --static mmreg`).
+# The system libraries are those of glibc targets; musl targets need only -lpthread -lm -lc.
 cc -O2 -Ibindings/c/include my_daemon.c target/release/libmmreg.a -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc -o my_daemon
 ```
+
+`mmreg_irq_wait(dev, MMREG_WAIT_FOREVER, &count)` waits without a timeout. Errors return `-1` (or
+`NULL`) and set a per-thread code and message; the codes specific to C and Python are listed in
+[Troubleshooting](06-troubleshooting.md#c--python-bindings).
 
 ### C Example
 
@@ -332,7 +368,10 @@ cc -O2 -Ibindings/c/include my_daemon.c target/release/libmmreg.a -lgcc_s -lutil
 #define CTRL_EN_MASK    0x00000001u
 #define CTRL_EN_SHIFT   0u
 #define STATUS_REG      0x04u
+#define SCRATCH_REG     0x08u
 #define IRQ_STATUS_REG  0x0Cu
+#define IRQ_STATUS_W1C  0x00000003u /* DONE (bit 0) and ERR (bit 1) are write-1-to-clear */
+#define IRQ_STATUS_DONE 0x00000001u
 
 int main(void) {
     mmreg_dev *dev = mmreg_open_uio("axi_gpio", 0);
@@ -354,7 +393,7 @@ int main(void) {
     if (mmreg_lock(dev) == 0) {
         uint32_t status = 0;
         mmreg_rd32(dev, STATUS_REG, &status);
-        mmreg_wr32(dev, 0x08u, status);
+        mmreg_wr32(dev, SCRATCH_REG, status);
         mmreg_unlock(dev);
     }
 
@@ -362,7 +401,8 @@ int main(void) {
     uint32_t irq_count = 0;
     int rc = mmreg_irq_wait(dev, 500, &irq_count);
     if (rc == 1) {
-        mmreg_wr32(dev, IRQ_STATUS_REG, 1u); /* clear W1C cause in device first */
+        /* Clear the cause in the device first: masked write, so only DONE is cleared */
+        mmreg_update32(dev, IRQ_STATUS_REG, IRQ_STATUS_W1C, IRQ_STATUS_DONE, NULL);
         mmreg_irq_unmask(dev);               /* then unmask kernel IRQ line */
     }
 
@@ -379,7 +419,7 @@ The pure-Python package in `bindings/python/mmreg` uses standard-library `ctypes
 `libmmreg.so`, so target boards need no compiler, PyO3, or wheel build.
 
 ```python
-from mmreg import Device, MmregError, find_uio
+from mmreg import Device, find_uio
 
 print("UIO node:", find_uio("axi_gpio"))
 
@@ -395,14 +435,15 @@ with Device.open_uio("axi_gpio") as d:
 
     # Inline register and bitfield definitions for interactive experiments without a block file
     d.define("CTRL", offset=0x08, fields={"EN": "0", "MODE": "7:4"})
-    d.CTRL.EN = 1
+    d.CTRL.EN = True         # 1-bit fields also accept bool
     d.CTRL.MODE = 5          # a value wider than the field raises [E_INVALID_ARG]
     print(f"CTRL = 0x{int(d.CTRL):08X}, MODE = {int(d.CTRL.MODE)}")
 
-    # Write-1-to-clear fields: written directly, and written as 0 when another field is updated
+    # Every field write is a masked read-modify-write; write-1-to-clear bits are written as 0
+    # unless they are the field being written
     d.define("ISR", offset=0x0C, fields={"DONE": "0", "ERR": "1", "MODE": "7:4"}, w1c={"DONE", "ERR"})
-    if d.read_u32(0x0C) & 0x1:
-        d.ISR.DONE = 1       # clears DONE only; a pending ERR is left alone
+    if d.ISR.DONE == 1:
+        d.ISR.DONE = 1       # clears DONE only; MODE is kept and a pending ERR is left alone
 
     # Wait for an interrupt (None waits without a timeout)
     if d.irq_wait(500) is not None:
@@ -414,5 +455,14 @@ Hardware is read only when asked for: `int(d.CTRL)`, `d.CTRL.read()`, or `d.CTRL
 register, so read-to-clear registers are not cleared by inspecting them. Register and field names
 that would shadow existing attributes (`size`, `lock`, `read`, ...) are rejected. Values outside
 the access width (`write_u8(0, 0x100)`, negative offsets or timeouts) raise `[E_INVALID_ARG]`
-instead of being truncated. When it first loads `libmmreg`, the package checks that it has the
-same major version (`mmreg_version()`).
+instead of being truncated; so do floats (`irq_wait(0.5)`) and `bool` anywhere except a 1-bit
+field. A `Device` owns its C handle, so `copy.copy`, `copy.deepcopy` and `pickle` raise
+`E_NOT_COPYABLE`: share the object instead. When it first loads `libmmreg`, the package checks that
+it has the same major version (`mmreg_version()`).
+
+Every exception the package raises is an `mmreg.MmregError` with a stable `.code`, and it survives
+pickling, so `multiprocessing` workers return it intact. A missing register or field is also an
+`AttributeError` (`hasattr(d, "CTRL")` works), a library that cannot be loaded (`E_LIB_LOAD`) also
+an `OSError`, and `E_NOT_COPYABLE` also a `TypeError`. Field bit specifications are `"7:4"`,
+`"[7:4]"`, `"0"`, `0` or `(7, 4)` (decimal or `0x` hex); anything else, or overlapping fields,
+raises `E_SUBREG_RANGE`. Installing the package: [Installation](02-installation.md#python-package).

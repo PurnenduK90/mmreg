@@ -72,14 +72,14 @@ trait CliBackend {
 
 struct HardwareBackend;
 
-impl CliBackend for HardwareBackend {
-    fn read(
-        &mut self,
+impl HardwareBackend {
+    fn open_target(
         target: CliTarget<'_>,
         width: Width,
+        read_only: bool,
         force: bool,
-    ) -> Result<u64, MmregError> {
-        match target {
+    ) -> Result<(Device, u32), MmregError> {
+        let (builder, offset) = match target {
             CliTarget::Address(address) => {
                 if address % (width.bytes() as u64) != 0 {
                     return Err(MmregError::UnalignedWidthAccess {
@@ -88,23 +88,27 @@ impl CliBackend for HardwareBackend {
                         width_bits: width.bits(),
                     });
                 }
-                let dev = Device::addr(address, width.bytes())
-                    .read_only()
-                    .with_force(force)
-                    .open()?;
-                for w in dev.warnings() {
-                    eprintln!("{w}");
-                }
-                dev.read(0, width)
+                (Device::addr(address, width.bytes()), 0)
             }
-            CliTarget::Uio { name, offset } => {
-                let dev = Device::uio(name).read_only().with_force(force).open()?;
-                for w in dev.warnings() {
-                    eprintln!("{w}");
-                }
-                dev.read(offset, width)
-            }
+            CliTarget::Uio { name, offset } => (Device::uio(name), offset),
+        };
+        let dev = builder.with_read_only(read_only).with_force(force).open()?;
+        for w in dev.warnings() {
+            eprintln!("{w}");
         }
+        Ok((dev, offset))
+    }
+}
+
+impl CliBackend for HardwareBackend {
+    fn read(
+        &mut self,
+        target: CliTarget<'_>,
+        width: Width,
+        force: bool,
+    ) -> Result<u64, MmregError> {
+        let (dev, offset) = Self::open_target(target, width, true, force)?;
+        dev.read(offset, width)
     }
 
     fn write(
@@ -114,31 +118,8 @@ impl CliBackend for HardwareBackend {
         value: u64,
         force: bool,
     ) -> Result<(), MmregError> {
-        match target {
-            CliTarget::Address(address) => {
-                if address % (width.bytes() as u64) != 0 {
-                    return Err(MmregError::UnalignedWidthAccess {
-                        address,
-                        offset: 0,
-                        width_bits: width.bits(),
-                    });
-                }
-                let dev = Device::addr(address, width.bytes())
-                    .with_force(force)
-                    .open()?;
-                for w in dev.warnings() {
-                    eprintln!("{w}");
-                }
-                dev.write(0, width, value)
-            }
-            CliTarget::Uio { name, offset } => {
-                let dev = Device::uio(name).with_force(force).open()?;
-                for w in dev.warnings() {
-                    eprintln!("{w}");
-                }
-                dev.write(offset, width, value)
-            }
-        }
+        let (dev, offset) = Self::open_target(target, width, false, force)?;
+        dev.write(offset, width, value)
     }
 }
 

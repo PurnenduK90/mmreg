@@ -64,6 +64,41 @@ cargo add mmreg --no-default-features    # without profile file parsing
 
 ---
 
+## Python Package
+
+The Python package (`bindings/python`) is pure Python over `libmmreg.so` and installs with `pip`
+in one of two ways.
+
+**A wheel that bundles `libmmreg.so`** (development hosts, boards without the C library). Build it
+in a checkout of this repository; a target CPU other than the host's needs
+[`cross`](https://github.com/cross-rs/cross):
+
+```sh
+just python-wheel                                   # this machine: target/wheels/mmreg-1.2.1-py3-none-linux_x86_64.whl
+just python-wheel aarch64-unknown-linux-gnu         # Zynq UltraScale+, i.MX8, Raspberry Pi 4/5
+just python-wheel armv7-unknown-linux-gnueabihf     # Zynq-7000, Cyclone V SoC, i.MX6, STM32MP1
+pip install mmreg-1.2.1-py3-none-linux_aarch64.whl  # on the target
+```
+
+The wheel carries a release `libmmreg.so` (UIO only, no `/dev/mem`) and a CPU tag, so `pip`
+refuses it on another architecture. `just python-wheel-test` installs the host wheel into a fresh
+virtual environment and runs the tests and examples against it. Wheels are for glibc targets.
+
+**The pure-Python package** when the image already installs `libmmreg.so` (Yocto, Buildroot, see
+below) or a development build points to one:
+
+```sh
+pip install ./bindings/python
+MMREG_LIB_PATH=$PWD/target/debug/libmmreg.so python3 bindings/python/examples/quickstart.py
+```
+
+The package loads the first library it finds: `$MMREG_LIB_PATH`, the copy bundled in the package,
+`target/release` / `target/debug` of the repository it is imported from, `/usr/local/lib`,
+`/usr/lib`, then the system search path. A missing or incompatible library raises `MmregError`
+`E_LIB_LOAD` on first use.
+
+---
+
 ## Cross-Compiling for Embedded Linux Targets
 
 `mmreg` uses [`cross`](https://github.com/cross-rs/cross) to build release binaries for embedded architectures listed in `targets.txt`: `x86_64`, `aarch64`, `armv7` (hard-float) and `riscv64gc` Linux, each as a glibc build (for distro / Yocto images), and `aarch64` and `armv7` also as a static musl build that runs on any rootfs:
@@ -95,9 +130,9 @@ You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) or Build
 | `mmreg` CLI (bring-up) | `--features debug` | Development / bring-up images (`devmem` replacement) |
 | Python `mmreg` (`bindings/python/mmreg`) | pure-Python (`ctypes` over `libmmreg.so`) | Development images or Python-enabled application images |
 
-### Option A: Building CLI, C Library, and Python Module from Source (`mmreg_1.2.0.bb`)
+### Option A: Building CLI, C Library, and Python Module from Source (`mmreg_1.2.1.bb`)
 
-Create `meta-custom/recipes-devtools/mmreg/mmreg_1.2.0.bb`:
+Create `meta-custom/recipes-devtools/mmreg/mmreg_1.2.1.bb`:
 
 ```bitbake
 SUMMARY = "Safe, concurrent 8/16/32/64-bit memory-mapped IO register access (Rust, C, Python, and CLI)"
@@ -106,8 +141,8 @@ LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://LICENSE.txt;md5=3914388ed65427d749c0c5886d2d12cf"
 
 SRC_URI = "git://github.com/PurnenduK90/mmreg.git;protocol=https;branch=main"
-# Pin the commit of the v1.2.0 tag: `${AUTOREV}` would drift away from the pinned `mmreg-crates.inc`.
-SRCREV = "<commit-sha-of-v1.2.0>"
+# Pin the commit of the v1.2.1 tag: `${AUTOREV}` would drift away from the pinned `mmreg-crates.inc`.
+SRCREV = "<commit-sha-of-v1.2.1>"
 S = "${WORKDIR}/git"
 
 inherit cargo cargo-update-recipe-crates python3-dir
@@ -147,7 +182,7 @@ RDEPENDS:${PN}-python = "${PN} python3-core"
 > ```sh
 > bitbake -c update_recipe_crates mmreg
 > ```
-> In **Buildroot**, use `$(eval $(cargo-package))` with `MMREG_CARGO_BUILD_OPTS = --workspace` and install `libmmreg.a`, `bindings/c/include/mmreg.h`, and `bindings/c/mmreg.pc` into `$(STAGING_DIR)/usr`, and `libmmreg.so` as `libmmreg.so.1.2.0` with `libmmreg.so.1` and `libmmreg.so` symlinks into both `$(STAGING_DIR)/usr/lib` and `$(TARGET_DIR)/usr/lib` (the library's SONAME is `libmmreg.so.1`).
+> In **Buildroot**, use `$(eval $(cargo-package))` with `MMREG_CARGO_BUILD_OPTS = --workspace` and install `libmmreg.a`, `bindings/c/include/mmreg.h`, and `bindings/c/mmreg.pc` into `$(STAGING_DIR)/usr`, and `libmmreg.so` as `libmmreg.so.1.2.1` with `libmmreg.so.1` and `libmmreg.so` symlinks into both `$(STAGING_DIR)/usr/lib` and `$(TARGET_DIR)/usr/lib` (the library's SONAME is `libmmreg.so.1`).
 
 ### Option B: Pre-Built Binary Recipe (For Older Yocto / PetaLinux Toolchains)
 

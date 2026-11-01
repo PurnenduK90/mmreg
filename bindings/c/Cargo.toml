@@ -1,6 +1,6 @@
 [package]
 name = "mmreg-capi"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
@@ -13,6 +13,7 @@ publish = false
 # Named `mmreg` so the outputs are `libmmreg.so` and `libmmreg.a`.
 name = "mmreg"
 crate-type = ["cdylib", "staticlib"]
+doc = false
 
 [features]
 # Raw /dev/mem access for addresses no UIO region covers: debug and bring-up builds only.
@@ -20,4 +21,4 @@ debug = ["mmreg-core/debug"]
 
 [dependencies]
 # No JSON safety-profile parser: the C ABI does not expose `SafetyProfile`.
-mmreg-core = { package = "mmreg", path = "../..", version = "1.2.0", default-features = false }
+mmreg-core = { package = "mmreg", path = "../..", version = "1.2.1", default-features = false }

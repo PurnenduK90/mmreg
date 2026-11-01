@@ -78,65 +78,107 @@ fn missing_c_prerequisite(what: &str) {
     );
 }
 
+/// A C example compiled into the temporary directory, removed on drop.
+#[cfg(unix)]
+struct CExample(std::path::PathBuf);
+
+#[cfg(unix)]
+impl Drop for CExample {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Compiles `examples/<name>.c` against `libmmreg.a` with warnings as errors and `-DNDEBUG`, or
+/// returns `None` (via [`missing_c_prerequisite`]) when `cc` or `libmmreg.a` is missing.
+#[cfg(unix)]
+fn compile_c_example(name: &str) -> Option<CExample> {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Check the active test binary's profile directory (`target/[<triple>/]<profile>/`) first so
+    // `--release` or `--target` runs never pick a stale `target/debug/libmmreg.a`.
+    let exe_profile_lib = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent().map(|dir| dir.join("libmmreg.a")));
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("../../target"));
+    let staticlib = exe_profile_lib
+        .into_iter()
+        .chain([
+            target_dir.join("debug/libmmreg.a"),
+            target_dir.join("release/libmmreg.a"),
+        ])
+        .find(|p| p.is_file());
+    let Some(lib_path) = staticlib else {
+        missing_c_prerequisite("libmmreg.a not found: run `cargo build -p mmreg-capi` first");
+        return None;
+    };
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    let link_libs: &[&str] = &[
+        "-lgcc_s",
+        "-lutil",
+        "-lrt",
+        "-lpthread",
+        "-lm",
+        "-ldl",
+        "-lc",
+    ];
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    let link_libs: &[&str] = &["-lpthread", "-lm", "-lc"];
+
+    let out_bin =
+        CExample(std::env::temp_dir().join(format!("mmreg_example_{name}_{}", std::process::id())));
+    let status = Command::new("cc")
+        .args(["-O2", "-Wall", "-Wextra", "-Werror", "-DNDEBUG", "-I"])
+        .arg(manifest_dir.join("include"))
+        .arg(manifest_dir.join(format!("examples/{name}.c")))
+        .arg(&lib_path)
+        .args(link_libs)
+        .arg("-o")
+        .arg(&out_bin.0)
+        .status();
+    let Ok(cc_status) = status else {
+        missing_c_prerequisite("C compiler `cc` not found");
+        return None;
+    };
+    assert!(cc_status.success(), "Failed to compile examples/{name}.c");
+    Some(out_bin)
+}
+
+#[cfg(unix)]
+#[test]
+fn test_c_examples_compile_and_quickstart_runs() {
+    let Some(quickstart) = compile_c_example("quickstart") else {
+        return;
+    };
+    let run = std::process::Command::new(&quickstart.0).output().unwrap();
+    assert!(
+        run.status.success(),
+        "examples/quickstart.c failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    // Hardware example: compiled only, so it cannot fall behind the header.
+    let _ = compile_c_example("uio_irq");
+}
+
 #[cfg(unix)]
 #[test]
 fn test_c_staticlib_example_and_c_rust_lock_interop() {
     use std::io::{BufRead, BufReader};
-    use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
     use std::time::Duration;
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // The workspace target directory, two levels above this crate unless CARGO_TARGET_DIR is set.
-    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("../../target"));
-    let staticlib = [
-        target_dir.join("debug/libmmreg.a"),
-        target_dir.join("release/libmmreg.a"),
-    ]
-    .into_iter()
-    .find(|p| p.is_file());
-    let Some(lib_path) = staticlib else {
-        missing_c_prerequisite("libmmreg.a not found: run `cargo build -p mmreg-capi` first");
+    let Some(test_capi) = compile_c_example("test_capi") else {
         return;
     };
-
-    let out_bin = std::env::temp_dir().join(format!("mmreg_test_capi_{}", std::process::id()));
-    let status = Command::new("cc")
-        .arg("-O2")
-        .arg("-Wall")
-        .arg("-Wextra")
-        .arg("-Werror")
-        .arg("-DNDEBUG")
-        .arg("-I")
-        .arg(manifest_dir.join("include"))
-        .arg(manifest_dir.join("examples/test_capi.c"))
-        .arg(&lib_path)
-        .args([
-            "-lgcc_s",
-            "-lutil",
-            "-lrt",
-            "-lpthread",
-            "-lm",
-            "-ldl",
-            "-lc",
-        ])
-        .arg("-o")
-        .arg(&out_bin)
-        .status();
-    let Ok(cc_status) = status else {
-        missing_c_prerequisite("C compiler `cc` not found");
-        return;
-    };
-    assert!(
-        cc_status.success(),
-        "Failed to compile examples/test_capi.c"
-    );
 
     // 1. Run the standalone C self-test binary (built with -DNDEBUG: its checks must still run).
-    let run_status = Command::new(&out_bin).status().unwrap();
+    let run_status = Command::new(&test_capi.0).status().unwrap();
     assert!(run_status.success(), "C ABI self-test binary failed");
 
     // 2. Two-process C <-> Rust lock interop on physical page 0x7C00_0000: hold the page lock from
@@ -149,13 +191,23 @@ fn test_c_staticlib_example_and_c_rust_lock_interop() {
         assert_eq!(mmreg_lock(rust_dev), 0);
     }
 
-    let mut c_child = Command::new(&out_bin)
-        .arg("lock")
-        .arg("0x7C000000")
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let stdout = c_child.stdout.take().unwrap();
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let mut c_child = ChildGuard(
+        Command::new(&test_capi.0)
+            .arg("lock")
+            .arg("0x7C000000")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = c_child.0.stdout.take().unwrap();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -178,7 +230,6 @@ fn test_c_staticlib_example_and_c_rust_lock_interop() {
     }
 
     assert_eq!(rx.recv_timeout(timeout).unwrap(), "acquired");
-    let exit = c_child.wait().unwrap();
+    let exit = c_child.0.wait().unwrap();
     assert!(exit.success(), "C lock interop child process failed");
-    let _ = std::fs::remove_file(&out_bin);
 }

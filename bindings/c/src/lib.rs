@@ -62,6 +62,7 @@ fn sanitize_c_string(s: &str) -> CString {
     CString::new(bytes).unwrap_or_default()
 }
 
+#[cold]
 fn set_error(code: &str, message: &str) {
     let err = ThreadError {
         code: sanitize_c_string(code),
@@ -73,15 +74,33 @@ fn set_error(code: &str, message: &str) {
     });
 }
 
+#[cold]
 fn set_mmreg_error(err: &MmregError) {
     set_error(err.code(), &err.to_string());
 }
 
+#[cold]
 fn set_panic_error() {
     set_error(
         "E_INTERNAL_PANIC",
         "[E_INTERNAL_PANIC] Unexpected panic caught at the C ABI boundary.",
     );
+}
+
+#[inline]
+fn ffi_status(f: impl FnOnce() -> c_int) -> c_int {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        set_panic_error();
+        -1
+    })
+}
+
+#[inline]
+fn ffi_ptr<T>(f: impl FnOnce() -> *mut T) -> *mut T {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        set_panic_error();
+        ptr::null_mut()
+    })
 }
 
 /// In-memory byte-addressable mapper used when `MMREG_O_MOCK` is passed for off-target tests.
@@ -91,16 +110,29 @@ struct CapiMockMapper {
 }
 
 impl CapiMockMapper {
-    fn boxed(size: usize) -> Box<dyn MemoryMapper> {
+    fn boxed() -> Box<dyn MemoryMapper> {
         Box::new(CapiMockMapper {
-            mem: Mutex::new(vec![0; size]),
+            mem: Mutex::new(Vec::new()),
             mapped: false,
         })
     }
 }
 
+/// `register_name` of the error `CapiMockMapper::map` returns for a window over `MOCK_MAX_SIZE`;
+/// `open_with_builder` reports that error as `E_INVALID_ARG` for every open function.
+const MOCK_LIMIT_LABEL: &str = "MMREG_O_MOCK";
+
 impl MemoryMapper for CapiMockMapper {
     fn map(&mut self, _address: u64, size: usize) -> Result<(), MmregError> {
+        // The only mock size check: the window size is known here for UIO and address opens alike.
+        if size > MOCK_MAX_SIZE {
+            return Err(MmregError::OutOfBoundsAccess {
+                register_name: MOCK_LIMIT_LABEL.to_string(),
+                offset: 0,
+                access_size: size,
+                region_size: MOCK_MAX_SIZE,
+            });
+        }
         let mut mem = self
             .mem
             .lock()
@@ -237,28 +269,40 @@ unsafe fn ref_dev<'a>(dev: *const mmreg_dev) -> Result<&'a mmreg_dev, ()> {
     })
 }
 
-fn open_with_builder(mut builder: DeviceBuilder, flags: u32, mock_size: usize) -> *mut mmreg_dev {
+fn open_with_builder(mut builder: DeviceBuilder, flags: u32, allow_region: bool) -> *mut mmreg_dev {
     let Ok((read_only, force, mock, region_index)) = parse_flags(flags) else {
         return ptr::null_mut();
     };
+    if !allow_region && region_index != 0 {
+        set_error(
+            "E_INVALID_ARG",
+            "[E_INVALID_ARG] MMREG_REGION(n) is only valid with mmreg_open_uio / mmreg_open_uio_path.",
+        );
+        return ptr::null_mut();
+    }
     builder = builder
         .region(region_index)
         .with_read_only(read_only)
         .with_force(force);
     if mock {
-        if mock_size > MOCK_MAX_SIZE {
-            set_error(
-                "E_INVALID_ARG",
-                &format!(
-                    "[E_INVALID_ARG] MMREG_O_MOCK window of {mock_size} bytes exceeds the                      {MOCK_MAX_SIZE}-byte limit."
-                ),
-            );
-            return ptr::null_mut();
-        }
-        builder = builder.with_custom_mapper(CapiMockMapper::boxed(mock_size.max(4096)));
+        builder = builder.with_custom_mapper(CapiMockMapper::boxed());
     }
     match builder.open() {
         Ok(dev) => Box::into_raw(Box::new(mmreg_dev::new(dev))),
+        Err(MmregError::OutOfBoundsAccess {
+            register_name,
+            access_size,
+            ..
+        }) if mock && register_name == MOCK_LIMIT_LABEL => {
+            set_error(
+                "E_INVALID_ARG",
+                &format!(
+                    "[E_INVALID_ARG] MMREG_O_MOCK window of {access_size} bytes exceeds the \
+                     {MOCK_MAX_SIZE}-byte limit."
+                ),
+            );
+            ptr::null_mut()
+        }
         Err(err) => {
             set_mmreg_error(&err);
             ptr::null_mut()
@@ -320,7 +364,7 @@ pub unsafe extern "C" fn mmreg_find_uio(
     buf: *mut c_char,
     len: usize,
 ) -> c_int {
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_status(|| {
         // SAFETY: Forwarded from C caller contract.
         let Ok(name_str) = (unsafe { cstr_to_str(name, "name") }) else {
             return -1;
@@ -358,10 +402,6 @@ pub unsafe extern "C" fn mmreg_find_uio(
                 -1
             }
         }
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        -1
     })
 }
 
@@ -374,16 +414,12 @@ pub unsafe extern "C" fn mmreg_find_uio(
 /// `name` must be NULL or a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn mmreg_open_uio(name: *const c_char, flags: u32) -> *mut mmreg_dev {
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_ptr(|| {
         // SAFETY: Forwarded from C caller contract.
         let Ok(name_str) = (unsafe { cstr_to_str(name, "name") }) else {
             return ptr::null_mut();
         };
-        open_with_builder(Device::uio(name_str), flags, 4096)
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        ptr::null_mut()
+        open_with_builder(Device::uio(name_str), flags, true)
     })
 }
 
@@ -395,16 +431,12 @@ pub unsafe extern "C" fn mmreg_open_uio(name: *const c_char, flags: u32) -> *mut
 /// `path` must be NULL or a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn mmreg_open_uio_path(path: *const c_char, flags: u32) -> *mut mmreg_dev {
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_ptr(|| {
         // SAFETY: Forwarded from C caller contract.
         let Ok(path_str) = (unsafe { cstr_to_str(path, "path") }) else {
             return ptr::null_mut();
         };
-        open_with_builder(Device::uio_path(path_str), flags, 4096)
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        ptr::null_mut()
+        open_with_builder(Device::uio_path(path_str), flags, true)
     })
 }
 
@@ -414,13 +446,7 @@ pub unsafe extern "C" fn mmreg_open_uio_path(path: *const c_char, flags: u32) ->
 /// Returns a non-null `mmreg_dev *` on success, or `NULL` on error.
 #[no_mangle]
 pub extern "C" fn mmreg_open_addr(base: u64, size: usize, flags: u32) -> *mut mmreg_dev {
-    catch_unwind(AssertUnwindSafe(|| {
-        open_with_builder(Device::addr(base, size), flags, size)
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        ptr::null_mut()
-    })
+    ffi_ptr(|| open_with_builder(Device::addr(base, size), flags, false))
 }
 
 /// Closes and frees `dev` (unmapping the register window and releasing any held locks).
@@ -451,7 +477,7 @@ macro_rules! impl_c_read {
             offset: u32,
             out: *mut $ty,
         ) -> c_int {
-            catch_unwind(AssertUnwindSafe(|| {
+            ffi_status(|| {
                 // SAFETY: Forwarded from C caller contract.
                 let Ok(handle) = (unsafe { ref_dev(dev) }) else {
                     return -1;
@@ -474,10 +500,6 @@ macro_rules! impl_c_read {
                         -1
                     }
                 }
-            }))
-            .unwrap_or_else(|_| {
-                set_panic_error();
-                -1
             })
         }
     };
@@ -491,7 +513,7 @@ macro_rules! impl_c_write {
         /// `dev` must be a valid `mmreg_dev` handle.
         #[no_mangle]
         pub unsafe extern "C" fn $fn_name(dev: *const mmreg_dev, offset: u32, value: $ty) -> c_int {
-            catch_unwind(AssertUnwindSafe(|| {
+            ffi_status(|| {
                 // SAFETY: Forwarded from C caller contract.
                 let Ok(handle) = (unsafe { ref_dev(dev) }) else {
                     return -1;
@@ -503,10 +525,6 @@ macro_rules! impl_c_write {
                         -1
                     }
                 }
-            }))
-            .unwrap_or_else(|_| {
-                set_panic_error();
-                -1
             })
         }
     };
@@ -537,7 +555,7 @@ pub unsafe extern "C" fn mmreg_update32(
     value: u32,
     out_new: *mut u32,
 ) -> c_int {
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_status(|| {
         // SAFETY: Forwarded from C caller contract.
         let Ok(handle) = (unsafe { ref_dev(dev) }) else {
             return -1;
@@ -555,10 +573,6 @@ pub unsafe extern "C" fn mmreg_update32(
                 -1
             }
         }
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        -1
     })
 }
 
@@ -571,7 +585,7 @@ pub unsafe extern "C" fn mmreg_update32(
 /// `dev` must be a valid `mmreg_dev` handle.
 #[no_mangle]
 pub unsafe extern "C" fn mmreg_lock(dev: *const mmreg_dev) -> c_int {
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_status(|| {
         // SAFETY: Forwarded from C caller contract.
         let Ok(handle) = (unsafe { ref_dev(dev) }) else {
             return -1;
@@ -591,10 +605,6 @@ pub unsafe extern "C" fn mmreg_lock(dev: *const mmreg_dev) -> c_int {
                 -1
             }
         }
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        -1
     })
 }
 
@@ -606,7 +616,7 @@ pub unsafe extern "C" fn mmreg_lock(dev: *const mmreg_dev) -> c_int {
 /// `dev` must be a valid `mmreg_dev` handle.
 #[no_mangle]
 pub unsafe extern "C" fn mmreg_unlock(dev: *const mmreg_dev) -> c_int {
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_status(|| {
         // SAFETY: Forwarded from C caller contract.
         let Ok(handle) = (unsafe { ref_dev(dev) }) else {
             return -1;
@@ -634,10 +644,6 @@ pub unsafe extern "C" fn mmreg_unlock(dev: *const mmreg_dev) -> c_int {
         };
         drop(popped);
         0
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        -1
     })
 }
 
@@ -649,7 +655,7 @@ pub unsafe extern "C" fn mmreg_unlock(dev: *const mmreg_dev) -> c_int {
 /// `dev` must be a valid `mmreg_dev` handle.
 #[no_mangle]
 pub unsafe extern "C" fn mmreg_irq_unmask(dev: *const mmreg_dev) -> c_int {
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_status(|| {
         // SAFETY: Forwarded from C caller contract.
         let Ok(handle) = (unsafe { ref_dev(dev) }) else {
             return -1;
@@ -661,14 +667,11 @@ pub unsafe extern "C" fn mmreg_irq_unmask(dev: *const mmreg_dev) -> c_int {
                 -1
             }
         }
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        -1
     })
 }
 
-/// Waits up to `timeout_ms` milliseconds for a UIO interrupt on `dev`.
+/// Waits up to `timeout_ms` milliseconds (`u64::MAX`, `MMREG_WAIT_FOREVER` in C: no timeout) for a
+/// UIO interrupt on `dev`.
 ///
 /// Returns:
 /// - `1` when an interrupt occurred (writing the cumulative kernel interrupt count to `*out_count`
@@ -684,12 +687,16 @@ pub unsafe extern "C" fn mmreg_irq_wait(
     timeout_ms: u64,
     out_count: *mut u32,
 ) -> c_int {
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_status(|| {
         // SAFETY: Forwarded from C caller contract.
         let Ok(handle) = (unsafe { ref_dev(dev) }) else {
             return -1;
         };
-        match handle.device.irq_wait(Duration::from_millis(timeout_ms)) {
+        let timeout = match timeout_ms {
+            u64::MAX => Duration::MAX, // MMREG_WAIT_FOREVER
+            ms => Duration::from_millis(ms),
+        };
+        match handle.device.irq_wait(timeout) {
             Ok(Some(count)) => {
                 if !out_count.is_null() {
                     // SAFETY: `out_count` is non-null.
@@ -703,10 +710,6 @@ pub unsafe extern "C" fn mmreg_irq_wait(
                 -1
             }
         }
-    }))
-    .unwrap_or_else(|_| {
-        set_panic_error();
-        -1
     })
 }
 
@@ -897,6 +900,17 @@ mod tests {
     }
 
     #[test]
+    fn test_python_package_version_matches_cargo() {
+        // `pyproject.toml` reads its version from `__version__`, so this pins the wheel too.
+        let init = include_str!("../../python/mmreg/__init__.py");
+        let expected = format!("__version__ = \"{}\"", env!("CARGO_PKG_VERSION"));
+        assert!(
+            init.lines().any(|line| line.trim() == expected),
+            "bindings/python/mmreg/__init__.py must contain `{expected}`"
+        );
+    }
+
+    #[test]
     fn test_mmreg_header_matches_exported_capi_symbols() {
         let header = include_str!("../include/mmreg.h");
         let src = include_str!("lib.rs");
@@ -953,12 +967,47 @@ mod tests {
 
     #[test]
     fn test_capi_mock_size_limit() {
-        assert!(mmreg_open_addr(
-            0x4000_0000,
-            MOCK_MAX_SIZE + 4096,
-            MMREG_O_FORCE | MMREG_O_MOCK
-        )
-        .is_null());
+        let too_large = MOCK_MAX_SIZE + 4096;
+        assert!(mmreg_open_addr(0x4000_0000, too_large, MMREG_O_FORCE | MMREG_O_MOCK).is_null());
+        assert_eq!(
+            unsafe { CStr::from_ptr(mmreg_last_error_code()) }
+                .to_str()
+                .unwrap(),
+            "E_INVALID_ARG"
+        );
+        assert_eq!(
+            unsafe { CStr::from_ptr(mmreg_last_error()) }
+                .to_str()
+                .unwrap(),
+            format!(
+                "[E_INVALID_ARG] MMREG_O_MOCK window of {too_large} bytes exceeds the {MOCK_MAX_SIZE}-byte limit."
+            )
+        );
+
+        // Unknown flag bits are rejected with E_INVALID_ARG
+        assert!(
+            mmreg_open_addr(0x4000_0000, 64, MMREG_O_FORCE | MMREG_O_MOCK | 0x8000_0000).is_null()
+        );
+        assert_eq!(
+            unsafe { CStr::from_ptr(mmreg_last_error_code()) }
+                .to_str()
+                .unwrap(),
+            "E_INVALID_ARG"
+        );
+
+        // MMREG_O_MOCK without MMREG_O_FORCE is rejected with E_INVALID_ARG
+        assert!(mmreg_open_addr(0x4000_0000, 64, MMREG_O_MOCK).is_null());
+        assert_eq!(
+            unsafe { CStr::from_ptr(mmreg_last_error_code()) }
+                .to_str()
+                .unwrap(),
+            "E_INVALID_ARG"
+        );
+
+        // MMREG_REGION(n) is rejected on mmreg_open_addr with E_INVALID_ARG
+        assert!(
+            mmreg_open_addr(0x4000_0000, 64, MMREG_O_FORCE | MMREG_O_MOCK | (1 << 8)).is_null()
+        );
         assert_eq!(
             unsafe { CStr::from_ptr(mmreg_last_error_code()) }
                 .to_str()

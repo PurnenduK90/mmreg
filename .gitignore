@@ -34,3 +34,12 @@ desktop.ini
 
 # Flycheck
 /flycheck*/
+
+# Python bytecode and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+/bindings/python/build/
+/bindings/python/dist/
+# A libmmreg.so copied next to the package for local experiments (wheels bundle it from a staging copy)
+/bindings/python/mmreg/libmmreg.so*

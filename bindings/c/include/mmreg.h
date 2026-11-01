@@ -17,7 +17,7 @@ extern "C" {
 /** Version of the API this header describes; compare with `mmreg_version()` at run time. */
 #define MMREG_VERSION_MAJOR 1
 #define MMREG_VERSION_MINOR 2
-#define MMREG_VERSION_PATCH 0
+#define MMREG_VERSION_PATCH 1
 
 /**
  * Opaque handle to a mapped peripheral register window (UIO or /dev/mem).
@@ -31,7 +31,10 @@ typedef struct mmreg_dev mmreg_dev;
 /** Skip blueprint and hardware pre-flight validation (`--force`). */
 #define MMREG_O_FORCE   (1u << 1)
 
-/** Back the device with an in-memory buffer for off-target unit tests (requires `MMREG_O_FORCE`). */
+/**
+ * Back the device with an in-memory buffer for off-target unit tests (requires `MMREG_O_FORCE`).
+ * Windows over 16 MiB are rejected with `E_INVALID_ARG` by every open function.
+ */
 #define MMREG_O_MOCK    (1u << 2)
 
 /** Encode UIO region index `n` (`maps/map<n>`, default 0) into `flags`. */
@@ -90,7 +93,8 @@ mmreg_dev *mmreg_open_uio_path(const char *path, uint32_t flags);
 
 /**
  * Opens the physical address window `[base, base + size)` via a covering UIO region or `/dev/mem`
- * (when built with the `debug` feature).
+ * (when built with the `debug` feature). `MMREG_REGION(n)` with `n != 0` is rejected with
+ * `E_INVALID_ARG`: the address selects the region.
  * Returns a non-NULL `mmreg_dev *` on success, or NULL on error.
  */
 mmreg_dev *mmreg_open_addr(uint64_t base, size_t size, uint32_t flags);
@@ -149,8 +153,12 @@ int mmreg_unlock(const mmreg_dev *dev);
  */
 int mmreg_irq_unmask(const mmreg_dev *dev);
 
+/** `timeout_ms` for `mmreg_irq_wait` that waits for an interrupt without a timeout. */
+#define MMREG_WAIT_FOREVER UINT64_MAX
+
 /**
- * Waits up to `timeout_ms` milliseconds for a UIO interrupt on `dev`.
+ * Waits up to `timeout_ms` milliseconds (`MMREG_WAIT_FOREVER`: no timeout) for a UIO interrupt
+ * on `dev`.
  * Returns:
  * -  1 if an interrupt fired (writes the cumulative kernel IRQ count to `*out_count` if non-NULL),
  * -  0 if the timeout elapsed with no interrupt,

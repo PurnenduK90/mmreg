@@ -28,8 +28,14 @@ bindings/
 │   ├── build.rs             # SONAME libmmreg.so.<major>
 │   ├── include/mmreg.h      # C header (checked against the exports by a unit test)
 │   ├── mmreg.pc             # pkg-config file
-│   └── examples/test_capi.c # C example and self-test
-└── python/        # pure-Python ctypes package over libmmreg.so, with its tests
+│   └── examples/            # test_capi.c (self-test, lock interop), quickstart.c, uio_irq.c
+└── python/        # pure-Python ctypes package over libmmreg.so
+    ├── mmreg/__init__.py    # the package (`__version__` is the single version source)
+    ├── pyproject.toml, README.md   # pip packaging; `just python-wheel` bundles libmmreg.so
+    ├── tests/test_mmreg.py
+    └── examples/            # quickstart.py, uio_irq.py
+
+examples/          # Rust examples: mock_quickstart.rs (runs anywhere), uio_irq.rs (hardware)
 ```
 
 Dependencies: `libc` (`mmap`, `sysconf`, `flock`, `poll`, `read`, `write`) is the only dependency.

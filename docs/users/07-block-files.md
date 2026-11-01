@@ -14,7 +14,7 @@ import mmreg
 with mmreg.open("gpio0") as d:     # UIO name → Device Tree compatible → block file
     print(d.CTRL)                  # decoded fields
     d.CTRL.MODE = "OPEN_DRAIN"     # enum names accepted
-    d.IRQ_STATUS.CHANGE = 0x01     # write-1-to-clear: writes only this bit
+    d.IRQ_STATUS.CHANGE = 0x01     # write-1-to-clear: clears only these bits
 ```
 
 **Block files are for interactive use only.** Production programs never read them: they use the C
@@ -178,16 +178,16 @@ digits (`"0xA001_0000"`).
 These are SystemRDL's properties, and CMSIS-SVD's `access`, `modifiedWriteValues` and `readAction`
 map onto them one-to-one, so an SVD import loses nothing. Rules the Python layer enforces:
 
-1. **Field writes write only what was asked.** Writing field F of register R:
-   - When every other field of R has a no-effect write value as shown above (`sw: "r"`,
-     `sw: "w"` with `singlepulse: true`, `woclr`, `woset`, `wot`, `wzc`, `wzs`, `wzt`), F is
-     written **without reading R first** (unmodeled bits are written as 0). Plain write-only fields
-     (`sw: "w"` without `singlepulse`) are not no-ops on write, so a register mixing `sw: "w"` with
-     other fields must be written as a whole register (`d.R = value`).
-   - Otherwise R is read and written back as shown above, under the device lock, so `rw` and
-     reserved bits keep their value and pending `woclr` bits are not cleared by accident.
-   - A register with a `wclr` / `wset` field is never read-modify-written: writing one of its
-     fields needs the whole register (`d.R = value`).
+1. **Field writes change only the field written.** A bus write always carries the whole register,
+   so writing field F of register R is always a masked read-modify-write under the device lock: R
+   is read, F gets the new value, every other field gets its value from the last column above
+   (`woclr` written as 0, `wzc` as 1, ...), and `rw`, reserved and unmodeled bits keep their value.
+   Other fields never change and pending `woclr` bits are never cleared by accident, even when R
+   has only `woclr` fields. Registers that cannot be read back this way are written whole
+   (`d.R = value`):
+   - a register with a plain write-only field (`sw: "w"` without `singlepulse`), whose value
+     cannot be read back;
+   - a register with a `wclr` / `wset` field, which any write changes.
 2. **No accidental read side effects.** Reading a register with `rclr` / `rset` fields, including
    the read of a read-modify-write, needs `side_effects=True`. `dump()` skips such registers and
    says so.

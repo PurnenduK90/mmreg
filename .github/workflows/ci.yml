@@ -22,17 +22,20 @@ jobs:
       - run: just lint
 
   test:
-    name: Test, Coverage & Docs
+    name: Test, Coverage, Docs & Python Wheel
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-llvm-cov
-      - run: just test coverage doc
+      - run: just test coverage doc python-wheel-test
 
   msrv:
     name: MSRV (1.75, Yocto scarthgap)
@@ -40,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.75
-      - run: cargo test --locked --no-default-features && cargo test --locked --all-features
+      - run: cargo test --locked --no-default-features && cargo test --locked --all-features && cargo test --locked -p mmreg-capi && cargo test --locked -p mmreg-capi --all-features
 
   build:
     name: Cross Build

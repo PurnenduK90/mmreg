@@ -40,10 +40,15 @@ replacement that refuses accesses likely to hang the bus instead of performing t
   returned via `dev.warnings()`).
 - **C and Python bindings (`bindings/`)**: [`bindings/c`](bindings/c) builds static
   (`libmmreg.a`) and shared (`libmmreg.so`) C libraries (`cargo build --release -p mmreg-capi`)
-  with [`mmreg.h`](bindings/c/include/mmreg.h), [`mmreg.pc`](bindings/c/mmreg.pc) and a
-  [C example](bindings/c/examples/test_capi.c); [`bindings/python`](bindings/python) is a
-  compiler-free `ctypes` package over `libmmreg.so` supporting context managers and inline register
-  definitions (`d.define("CTRL", offset=0x8, fields={"EN": "0"})`).
+  with [`mmreg.h`](bindings/c/include/mmreg.h) and [`mmreg.pc`](bindings/c/mmreg.pc);
+  [`bindings/python`](bindings/python) is a compiler-free `ctypes` package over `libmmreg.so`
+  supporting context managers and inline register definitions
+  (`d.define("CTRL", offset=0x8, fields={"EN": "0"})`), installed with `pip` (`just python-wheel`
+  builds a wheel that bundles `libmmreg.so`).
+- **Runnable examples** for Rust ([`examples/`](examples)), C
+  ([`bindings/c/examples/`](bindings/c/examples)) and Python
+  ([`bindings/python/examples/`](bindings/python/examples)): a mock-device tour that runs anywhere
+  and a UIO interrupt loop for hardware, all built and run by `just test`.
 
 ## CLI
 ```sh
@@ -79,7 +84,9 @@ fn main() -> Result<(), MmregError> {
 
     // Wait for a UIO interrupt (clear source in device, then unmask)
     if let Some(_irq_count) = dev.irq_wait(Duration::from_millis(100))? {
-        dev.write_u32(0x0C, 0x1)?; // clear W1C interrupt status bit
+        // Clear W1C status bit 0 with a masked write (mask = all W1C bits, here 0..1): other
+        // bits keep their value and a pending bit 1 is not cleared by accident
+        dev.update_u32(0x0C, 0x3, 0x1)?;
         dev.irq_unmask()?;
     }
 

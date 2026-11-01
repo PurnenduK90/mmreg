@@ -6,17 +6,22 @@
   committed `Cargo.lock`. Policy and the features to avoid:
   [Roadmap Reference → Rust version](05-roadmap-reference.md#rust-version).
 - [`just`](https://github.com/casey/just) for the tasks below; `cargo-llvm-cov` for coverage;
-  [`cross`](https://github.com/cross-rs/cross) and Docker for cross builds.
+  [`cross`](https://github.com/cross-rs/cross) and Docker for cross builds; on Linux a C compiler
+  (`cc`) and Python 3 with `pip` and `venv` for the C, Python and wheel tests.
 
 ## Tasks (`justfile`)
 
 | Command | Runs |
 | :--- | :--- |
-| `just` / `just ci` | `fmt-check`, `clippy`, `test`, `coverage`, `doc`, `package-check` |
+| `just` / `just ci` | `fmt-check`, `clippy`, `test`, `coverage`, `doc`, `package-check`, `python-wheel-test` |
 | `just ci-all` | `ci` plus `build-targets` |
 | `just lint` | `fmt-check` + `clippy` |
 | `just clippy` | clippy with `-D warnings`: `--no-default-features`, default, `--all-features` |
-| `just test` | unit and doc tests for the same three feature sets |
+| `just test` | unit and doc tests for the same three feature sets and `mmreg-capi` (C interop tests, which compile every `bindings/c/examples/*.c` and run `quickstart.c`), then `test-python` and `examples` |
+| `just test-python` | the Python binding's unit tests against `target/debug/libmmreg.so` |
+| `just examples` | runs the mock-device examples (Rust, Python); the `uio_irq` hardware examples are only compiled |
+| `just python-wheel [triple]` | wheel bundling a release `libmmreg.so` in `target/wheels/`, for the host or a glibc `cross` target |
+| `just python-wheel-test` | installs the host wheel into a fresh venv and runs the Python tests and quickstart against it |
 | `just coverage` | `cargo llvm-cov`, failing under 80% line coverage |
 | `just doc` | `cargo doc` with warnings denied |
 | `just build-targets` | `cross build --release --features debug` for every triple in `targets.txt` |
@@ -32,6 +37,12 @@ on Linux (or WSL) too; `cargo clippy --target armv7-unknown-linux-gnueabihf` (af
 - `debug` (off): `/dev/mem` access for addresses outside UIO regions. Prebuilt binaries
   (`just build-targets`) are bring-up tools and enable it; Yocto / Buildroot recipes choose per
   image (development images with `debug`, release images without).
+- The C ABI is not a feature but the workspace member `mmreg-capi` (`bindings/c`): `cargo build
+  --release -p mmreg-capi` builds `libmmreg.a` and `libmmreg.so` (UIO only, no JSON parser; add
+  `--features debug` for `/dev/mem`), used by C programs and by the `ctypes` binding in
+  `bindings/python/mmreg`. Plain `cargo build` / `cargo test` cover only the `mmreg` crate
+  (`default-members`); `just` runs the workspace. On Windows MSVC, build the CLI and the C library
+  in separate invocations: both write `mmreg.pdb`.
 - **SemVer:** features are additive; the public API is stable across 1.x (public enums and the
   register structs are `#[non_exhaustive]`). Check API changes against the previous release before
   tagging (e.g. `cargo semver-checks`).
@@ -61,7 +72,8 @@ host toolchain and the build fails. Left out for that reason: `riscv64gc-unknown
 
 ## CI/CD (`.github/workflows/`)
 - **[`ci.yml`](../../.github/workflows/ci.yml)** (push / PR to `main`): `lint` (`just lint`),
-  `test` (`just test coverage doc`), `msrv` (`cargo test --locked` on 1.75, both feature sets), then
+  `test` (`just test coverage doc python-wheel-test`), `msrv` (`cargo test --locked` on 1.75, both
+  feature sets of `mmreg` and of `mmreg-capi`), then
   `build` (`just build-targets`).
 - **[`publish.yml`](../../.github/workflows/publish.yml)**: on a `v*.*.*` tag, `cargo publish`
   with the `CARGO_TOKEN` secret.

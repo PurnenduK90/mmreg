@@ -186,6 +186,7 @@ impl Interface {
             return Ok(());
         }
         self.validate_layout()?;
+
         if let Some(profile) = &self.safety_profile {
             profile.execute_with(|addr| crate::read_register_at(addr, true))?;
         }
@@ -285,6 +286,10 @@ impl Interface {
 
     /// Writes a subregister (bitfield) by read-modify-write under one lock. Bits of `value`
     /// above the field width are ignored.
+    ///
+    /// Only this field is masked: in a register that also holds write-1-to-clear bits, pending
+    /// ones are written back as `1` and cleared. Use [`Device::update_u32`] with every `w1c` bit
+    /// of the register in the mask for such registers.
     pub fn write_subregister(
         &mut self,
         reg_name: &str,
@@ -315,44 +320,8 @@ impl Drop for Interface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memregs::Width;
     use crate::register::SubRegister;
-    use std::sync::Mutex;
-
-    struct MockMapper {
-        storage: Mutex<Vec<u32>>,
-        mapped: bool,
-    }
-
-    impl MockMapper {
-        fn boxed(size: usize) -> Box<Self> {
-            Box::new(Self {
-                storage: Mutex::new(vec![0; size / 4]),
-                mapped: false,
-            })
-        }
-    }
-
-    impl MemoryMapper for MockMapper {
-        fn map(&mut self, _address: u64, _size: usize) -> Result<(), MmregError> {
-            self.mapped = true;
-            Ok(())
-        }
-        fn unmap(&mut self) {
-            self.mapped = false;
-        }
-        fn is_mapped(&self) -> bool {
-            self.mapped
-        }
-        fn read(&self, offset: u32, width: Width) -> u64 {
-            assert_eq!(width, Width::U32);
-            u64::from(self.storage.lock().unwrap()[offset as usize / 4])
-        }
-        fn write(&self, offset: u32, width: Width, value: u64) {
-            assert_eq!(width, Width::U32);
-            self.storage.lock().unwrap()[offset as usize / 4] = value as u32;
-        }
-    }
+    use crate::TestMockMapper as MockMapper;
 
     fn mock_iface(name: &str, size: usize, registers: Vec<Register>) -> Interface {
         Interface::new(name, 0x4000_0000, size, registers)

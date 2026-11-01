@@ -185,54 +185,20 @@ impl DeviceBuilder {
         let has_custom = self.custom_mapper.is_some();
         let (default_name, base_address, size, mapper_type) = match self.spec {
             TargetSpec::UioName(uio_name) => {
-                match find_uio(&uio_name)
-                    .and_then(|p| read_uio_region(&p, self.region_index).map(|w| (p, w)))
-                {
-                    Ok((path, win)) => (
-                        uio_name,
-                        win.addr,
-                        win.size as usize,
-                        MapperType::Uio {
-                            device_path: path,
-                            region_index: self.region_index,
-                        },
-                    ),
-                    // Off-target tests: a custom mapper with `with_force(true)` stands in for a
-                    // UIO device that does not exist (one page at address 0; see
-                    // `with_custom_mapper`).
-                    Err(_) if has_custom && self.force_map => (
-                        uio_name.clone(),
-                        0,
-                        page_size() as usize,
-                        MapperType::Uio {
-                            device_path: uio_name,
-                            region_index: self.region_index,
-                        },
-                    ),
-                    Err(e) => return Err(e),
-                }
+                let path_res = find_uio(&uio_name);
+                Self::resolve_uio_spec(
+                    uio_name,
+                    path_res,
+                    self.region_index,
+                    has_custom && self.force_map,
+                )?
             }
-            TargetSpec::UioPath(path) => match read_uio_region(&path, self.region_index) {
-                Ok(win) => (
-                    path.clone(),
-                    win.addr,
-                    win.size as usize,
-                    MapperType::Uio {
-                        device_path: path,
-                        region_index: self.region_index,
-                    },
-                ),
-                Err(_) if has_custom && self.force_map => (
-                    path.clone(),
-                    0,
-                    page_size() as usize,
-                    MapperType::Uio {
-                        device_path: path,
-                        region_index: self.region_index,
-                    },
-                ),
-                Err(e) => return Err(e),
-            },
+            TargetSpec::UioPath(path) => Self::resolve_uio_spec(
+                path.clone(),
+                Ok(path),
+                self.region_index,
+                has_custom && self.force_map,
+            )?,
             TargetSpec::Addr { base, size } => {
                 let label = self
                     .name_override
@@ -278,13 +244,22 @@ impl DeviceBuilder {
         };
 
         let uio_lock = match &uio_device_path {
-            Some(path) => match DeviceLock::open(path) {
-                Ok(lock) => Some(lock),
-                Err(err) => {
-                    backend.unmap();
-                    return Err(err);
+            Some(path) => {
+                let lock_res = match &backend {
+                    Backend::Os(os) => match os.uio_file() {
+                        Some(file) => DeviceLock::from_open_file(file, path),
+                        None => DeviceLock::open(path),
+                    },
+                    Backend::Custom(_) => DeviceLock::open(path),
+                };
+                match lock_res {
+                    Ok(lock) => Some(lock),
+                    Err(err) => {
+                        backend.unmap();
+                        return Err(err);
+                    }
                 }
-            },
+            }
             None => None,
         };
 
@@ -300,6 +275,37 @@ impl DeviceBuilder {
             base_page_lock: OnceLock::new(),
             _pm_guard: pm_guard,
         })
+    }
+
+    fn resolve_uio_spec(
+        default_name: String,
+        path_res: Result<String, MmregError>,
+        region_index: usize,
+        mock_fallback: bool,
+    ) -> Result<(String, u64, usize, MapperType), MmregError> {
+        match path_res.and_then(|p| read_uio_region(&p, region_index).map(|w| (p, w))) {
+            Ok((path, win)) => Ok((
+                default_name,
+                win.addr,
+                win.size as usize,
+                MapperType::Uio {
+                    device_path: path,
+                    region_index,
+                },
+            )),
+            // Off-target tests: a custom mapper with `with_force(true)` stands in for a UIO
+            // device that does not exist (one page at address 0; see `with_custom_mapper`).
+            Err(_) if mock_fallback => Ok((
+                default_name.clone(),
+                0,
+                page_size() as usize,
+                MapperType::Uio {
+                    device_path: default_name,
+                    region_index,
+                },
+            )),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -470,33 +476,49 @@ impl Device {
         lock(None, lock_addr)
     }
 
+    #[inline]
     fn check_access(&self, offset: u32, width: Width, write: bool) -> Result<u64, MmregError> {
         if write && self.read_only {
-            return Err(MmregError::ReadOnly {
-                name: self.name.clone(),
-            });
+            return Err(self.err_read_only());
         }
         let bytes = width.bytes();
         let address = self.base_address.wrapping_add(u64::from(offset));
         if (offset as usize) % bytes != 0 || address % (bytes as u64) != 0 {
-            return Err(MmregError::UnalignedWidthAccess {
-                address: self.base_address,
-                offset,
-                width_bits: width.bits(),
-            });
+            return Err(self.err_unaligned(offset, width));
         }
         if (offset as usize)
             .checked_add(bytes)
             .map_or(true, |end| end > self.size)
         {
-            return Err(MmregError::OutOfBoundsAccess {
-                register_name: self.name.clone(),
-                offset,
-                access_size: bytes,
-                region_size: self.size,
-            });
+            return Err(self.err_out_of_bounds(offset, bytes));
         }
         Ok(address)
+    }
+
+    #[cold]
+    fn err_read_only(&self) -> MmregError {
+        MmregError::ReadOnly {
+            name: self.name.clone(),
+        }
+    }
+
+    #[cold]
+    fn err_unaligned(&self, offset: u32, width: Width) -> MmregError {
+        MmregError::UnalignedWidthAccess {
+            address: self.base_address,
+            offset,
+            width_bits: width.bits(),
+        }
+    }
+
+    #[cold]
+    fn err_out_of_bounds(&self, offset: u32, access_size: usize) -> MmregError {
+        MmregError::OutOfBoundsAccess {
+            register_name: self.name.clone(),
+            offset,
+            access_size,
+            region_size: self.size,
+        }
     }
 
     /// Reads `width` bits at byte `offset` from the start of the window, zero-extended to `u64`.
@@ -615,7 +637,7 @@ impl Device {
 
     /// Waits up to `timeout` for a UIO interrupt (`poll(POLLIN)` + 4-byte `read`) and returns
     /// `Ok(Some(count))` with the kernel's cumulative interrupt counter, or `Ok(None)` if the
-    /// timeout elapsed before an interrupt arrived.
+    /// timeout elapsed before an interrupt arrived. `Duration::MAX` waits without a timeout.
     ///
     /// `irq_wait` does **not** unmask the interrupt line automatically: clear the interrupt source
     /// in the device registers first, then call [`Device::irq_unmask`].
@@ -646,58 +668,8 @@ impl Drop for Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestMockMapper as ByteMockMapper;
     use std::sync::Arc;
-
-    struct ByteMockMapper {
-        bytes: Mutex<Vec<u8>>,
-        mapped: bool,
-    }
-
-    impl ByteMockMapper {
-        fn boxed(size: usize) -> Box<Self> {
-            Box::new(Self {
-                bytes: Mutex::new(vec![0; size]),
-                mapped: false,
-            })
-        }
-    }
-
-    impl MemoryMapper for ByteMockMapper {
-        fn map(&mut self, _address: u64, _size: usize) -> Result<(), MmregError> {
-            self.mapped = true;
-            Ok(())
-        }
-
-        fn unmap(&mut self) {
-            self.mapped = false;
-        }
-
-        fn is_mapped(&self) -> bool {
-            self.mapped
-        }
-
-        fn read(&self, offset: u32, width: Width) -> u64 {
-            let at = offset as usize;
-            let bytes = self.bytes.lock().unwrap();
-            match width {
-                Width::U8 => u64::from(bytes[at]),
-                Width::U16 => u64::from(u16::from_ne_bytes(bytes[at..at + 2].try_into().unwrap())),
-                Width::U32 => u64::from(u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap())),
-                Width::U64 => u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap()),
-            }
-        }
-
-        fn write(&self, offset: u32, width: Width, value: u64) {
-            let at = offset as usize;
-            let mut slice = self.bytes.lock().unwrap();
-            match width {
-                Width::U8 => slice[at] = value as u8,
-                Width::U16 => slice[at..at + 2].copy_from_slice(&(value as u16).to_ne_bytes()),
-                Width::U32 => slice[at..at + 4].copy_from_slice(&(value as u32).to_ne_bytes()),
-                Width::U64 => slice[at..at + 8].copy_from_slice(&value.to_ne_bytes()),
-            }
-        }
-    }
 
     #[test]
     fn test_device_all_widths_update_alignment_and_bounds() {

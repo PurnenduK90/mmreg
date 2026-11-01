@@ -191,6 +191,45 @@ pub(crate) fn find_uio_by_name(
     }
 }
 
+/// `MmregError::UioAddressInvalid` for region `region_index` of `device_path`, recording `address`.
+#[cold]
+pub(crate) fn uio_address_invalid(
+    device_path: &str,
+    region_index: usize,
+    address: u64,
+    details: impl Into<String>,
+) -> MmregError {
+    MmregError::UioAddressInvalid {
+        device_path: device_path.to_string(),
+        region_index,
+        address,
+        details: details.into(),
+    }
+}
+
+/// Reads the raw `UioMap` (`addr`, `size`) and its sysfs directory for `device_path` and
+/// `region_index`, returning `MmregError::UioAddressInvalid` (recording `address`) on failure.
+pub(crate) fn uio_region_raw(
+    sysfs_uio: &Path,
+    device_path: &str,
+    region_index: usize,
+    address: u64,
+) -> Result<(PathBuf, UioMap), MmregError> {
+    let invalid = |details: &str| uio_address_invalid(device_path, region_index, address, details);
+    let map_dir = Path::new(device_path)
+        .file_name()
+        .map(|dev| {
+            sysfs_uio
+                .join(dev)
+                .join("maps")
+                .join(format!("map{region_index}"))
+        })
+        .ok_or_else(|| invalid("device path has no file name"))?;
+    let region = UioMap::read(&map_dir)
+        .ok_or_else(|| invalid("cannot read the region's sysfs addr/size"))?;
+    Ok((map_dir, region))
+}
+
 /// Reads the physical window `(addr, size)` of UIO region `map<region_index>` for `device_path`.
 pub(crate) fn read_uio_region(
     device_path: &str,
@@ -204,23 +243,7 @@ pub(crate) fn uio_region_window(
     device_path: &str,
     region_index: usize,
 ) -> Result<UioMap, MmregError> {
-    let invalid = |details: &str| MmregError::UioAddressInvalid {
-        device_path: device_path.to_string(),
-        region_index,
-        address: 0,
-        details: details.to_string(),
-    };
-    let map_dir = Path::new(device_path)
-        .file_name()
-        .map(|dev| {
-            sysfs_uio
-                .join(dev)
-                .join("maps")
-                .join(format!("map{region_index}"))
-        })
-        .ok_or_else(|| invalid("device path has no file name"))?;
-    let mut region = UioMap::read(&map_dir)
-        .ok_or_else(|| invalid("cannot read the region's sysfs addr/size"))?;
+    let (map_dir, mut region) = uio_region_raw(sysfs_uio, device_path, region_index, 0)?;
     // Newer `uio_pdrv_genirq` reports a page-aligned `addr`, the registers' position in that page
     // as `offset`, and a `size` counted from `addr`: the registers start at `addr + offset`.
     // Older kernels report the registers' own `addr` and a `size` counted from it, used as is.
@@ -237,7 +260,12 @@ pub(crate) fn uio_region_window(
         }
     }
     if region.size == 0 || usize::try_from(region.size).is_err() {
-        return Err(invalid("region size is zero or overflows usize"));
+        return Err(uio_address_invalid(
+            device_path,
+            region_index,
+            0,
+            "region size is zero or overflows usize",
+        ));
     }
     Ok(region)
 }

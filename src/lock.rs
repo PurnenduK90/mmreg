@@ -90,9 +90,12 @@ impl SharedLock {
         while state.owner.is_some() {
             state = self.cvar.wait(state).unwrap_or_else(|e| e.into_inner());
         }
-        lock_exclusive(&self.file).map_err(|e| MmregError::LockAcquire {
-            details: e.to_string(),
-        })?;
+        if let Err(e) = lock_exclusive(&self.file) {
+            self.cvar.notify_one();
+            return Err(MmregError::LockAcquire {
+                details: e.to_string(),
+            });
+        }
         state.owner = Some(current);
         state.depth = 1;
         Ok(LockGuard {
@@ -110,13 +113,29 @@ impl SharedLock {
             self.cvar.notify_one();
         }
     }
+
+    fn is_owned_by(&self, thread: ThreadId) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.owner == Some(thread) && state.depth > 0
+    }
 }
 
 type LockTable = Vec<(FileKey, Weak<SharedLock>)>;
 
-fn shared_lock_for(file: File, path: &Path) -> io::Result<Arc<SharedLock>> {
+/// Maps an I/O error on lock file `path` to `MmregError::LockOpen`.
+fn lock_open_error(path: &Path) -> impl Fn(io::Error) -> MmregError + '_ {
+    move |e| MmregError::LockOpen {
+        lock_path: path.to_path_buf(),
+        details: e.to_string(),
+    }
+}
+
+/// Returns the registry's lock for `key`, creating it from `make_file()` (called only when absent).
+fn insert_or_get_shared_lock(
+    key: FileKey,
+    make_file: impl FnOnce() -> io::Result<File>,
+) -> io::Result<Arc<SharedLock>> {
     static REGISTRY: OnceLock<Mutex<LockTable>> = OnceLock::new();
-    let key = file_key(&file, path)?;
     let mutex = REGISTRY.get_or_init(|| Mutex::new(Vec::new()));
     let mut table = mutex.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -127,7 +146,7 @@ fn shared_lock_for(file: File, path: &Path) -> io::Result<Arc<SharedLock>> {
         }
     }
 
-    let shared = Arc::new(SharedLock::new(file));
+    let shared = Arc::new(SharedLock::new(make_file()?));
     table.push((key, Arc::downgrade(&shared)));
     Ok(shared)
 }
@@ -137,16 +156,37 @@ fn shared_lock_for(file: File, path: &Path) -> io::Result<Arc<SharedLock>> {
 pub(crate) struct DeviceLock(Arc<SharedLock>);
 
 impl DeviceLock {
+    /// Reuses an already-open `/dev/uioN` descriptor (`file`) for the per-process lock registry
+    /// without a second `open(2)` syscall, cloning the descriptor only if this `(st_dev, st_ino)`
+    /// is not yet in the registry.
+    pub(crate) fn from_open_file(file: &File, device_path: &str) -> Result<Self, MmregError> {
+        let path = Path::new(device_path);
+        let key = file_key(file, path).map_err(lock_open_error(path))?;
+        Self::registered(key, path, || file.try_clone())
+    }
+
     /// Opens `device_path` read-only (enough for `flock`) or reuses the process's open descriptor
     /// for the same `(st_dev, st_ino)`.
     pub(crate) fn open(device_path: &str) -> Result<Self, MmregError> {
         let path = Path::new(device_path);
-        let err = |e: io::Error| MmregError::LockOpen {
-            lock_path: path.to_path_buf(),
-            details: e.to_string(),
-        };
-        let file = File::open(path).map_err(err)?;
-        shared_lock_for(file, path).map(DeviceLock).map_err(err)
+        let file = File::open(path).map_err(lock_open_error(path))?;
+        Self::from_file(file, path)
+    }
+
+    /// Registers the freshly opened lock `file`, or drops it for the process's existing descriptor.
+    fn from_file(file: File, path: &Path) -> Result<Self, MmregError> {
+        let key = file_key(&file, path).map_err(lock_open_error(path))?;
+        Self::registered(key, path, || Ok(file))
+    }
+
+    fn registered(
+        key: FileKey,
+        path: &Path,
+        make_file: impl FnOnce() -> io::Result<File>,
+    ) -> Result<Self, MmregError> {
+        insert_or_get_shared_lock(key, make_file)
+            .map(DeviceLock)
+            .map_err(lock_open_error(path))
     }
 
     /// Opens or reuses the page lock file for `address` in `dir`.
@@ -158,12 +198,8 @@ impl DeviceLock {
             base,
             base.wrapping_add(page)
         ));
-        let err = |e: io::Error| MmregError::LockOpen {
-            lock_path: path.clone(),
-            details: e.to_string(),
-        };
-        let file = open_lock_file(&path).map_err(err)?;
-        shared_lock_for(file, &path).map(DeviceLock).map_err(err)
+        let file = open_lock_file(&path).map_err(lock_open_error(&path))?;
+        Self::from_file(file, &path)
     }
 
     /// Opens or reuses the page lock file for `address` in the system lock directory.
@@ -184,6 +220,20 @@ enum HeldLocks {
     Many(Vec<Arc<SharedLock>>),
 }
 
+impl HeldLocks {
+    fn release_all(&self) {
+        match self {
+            HeldLocks::None => {}
+            HeldLocks::One(lock) => lock.release(),
+            HeldLocks::Many(locks) => {
+                for lock in locks.iter().rev() {
+                    lock.release();
+                }
+            }
+        }
+    }
+}
+
 /// One or more held device or page locks, released when dropped.
 ///
 /// Returned by [`crate::Device::lock`]. Reentrant on the holding thread: while a `LockGuard` is
@@ -195,6 +245,18 @@ pub struct LockGuard<'a> {
     _marker: PhantomData<(&'a (), *const ())>,
 }
 
+impl LockGuard<'_> {
+    /// Detaches the guard from the [`crate::Device`] borrow, for layers that hold a lock across
+    /// calls (the C ABI's `mmreg_lock` / `mmreg_unlock`). The locks stay held by this thread until
+    /// the returned [`OwnedLockGuard`] is dropped.
+    pub fn into_owned(mut self) -> OwnedLockGuard {
+        OwnedLockGuard {
+            held: std::mem::replace(&mut self.held, HeldLocks::None),
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl std::fmt::Debug for LockGuard<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LockGuard").finish_non_exhaustive()
@@ -203,15 +265,39 @@ impl std::fmt::Debug for LockGuard<'_> {
 
 impl Drop for LockGuard<'_> {
     fn drop(&mut self) {
+        self.held.release_all();
+    }
+}
+
+/// A [`LockGuard`] detached from its [`crate::Device`] borrow by [`LockGuard::into_owned`],
+/// releasing its locks when dropped. Like `LockGuard`, it is not `Send`: the locks belong to the
+/// thread that took them.
+pub struct OwnedLockGuard {
+    held: HeldLocks,
+    _marker: PhantomData<*const ()>,
+}
+
+impl std::fmt::Debug for OwnedLockGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedLockGuard").finish_non_exhaustive()
+    }
+}
+
+impl OwnedLockGuard {
+    /// Whether the calling thread holds every lock in this guard.
+    pub fn is_owned_by_current_thread(&self) -> bool {
+        let current = std::thread::current().id();
         match &self.held {
-            HeldLocks::None => {}
-            HeldLocks::One(lock) => lock.release(),
-            HeldLocks::Many(locks) => {
-                for lock in locks.iter().rev() {
-                    lock.release();
-                }
-            }
+            HeldLocks::None => true,
+            HeldLocks::One(lock) => lock.is_owned_by(current),
+            HeldLocks::Many(locks) => locks.iter().all(|l| l.is_owned_by(current)),
         }
+    }
+}
+
+impl Drop for OwnedLockGuard {
+    fn drop(&mut self) {
+        self.held.release_all();
     }
 }
 
@@ -423,27 +509,26 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Child half of the inter-process tests: when spawned by [`assert_child_excluded`], takes the
+    /// lock on `MMREG_TEST_CHILD_LOCK_FILE` and returns `true` so the test returns at once.
     #[cfg(unix)]
-    #[test]
-    fn test_interprocess_flock_excludes_child_process() {
-        if let Ok(lock_path) = std::env::var("MMREG_TEST_CHILD_LOCK_FILE") {
-            let dev_lock = DeviceLock::open(&lock_path).unwrap();
-            let _g = dev_lock.lock().unwrap();
-            return;
-        }
+    fn run_as_lock_child() -> bool {
+        let Ok(lock_path) = std::env::var("MMREG_TEST_CHILD_LOCK_FILE") else {
+            return false;
+        };
+        let dev_lock = DeviceLock::open(&lock_path).unwrap();
+        let _g = dev_lock.lock().unwrap();
+        true
+    }
 
-        let dir = crate::test_dir("interprocess_lock");
-        let dev = dir.join("uio0");
-        fs::write(&dev, b"").unwrap();
-        let path = dev.to_str().unwrap().to_string();
-
-        let parent_lock = DeviceLock::open(&path).unwrap();
-        let guard = parent_lock.lock().unwrap();
-
+    /// Re-runs `test_name` as a child process locking `path`, asserts that it blocks while `guard`
+    /// is held, then releases `guard` and asserts that the child finishes.
+    #[cfg(unix)]
+    fn assert_child_excluded(path: &str, test_name: &str, guard: LockGuard<'_>) {
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .env("MMREG_TEST_CHILD_LOCK_FILE", &path)
+            .env("MMREG_TEST_CHILD_LOCK_FILE", path)
             .arg("--exact")
-            .arg("lock::tests::test_interprocess_flock_excludes_child_process")
+            .arg(test_name)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -456,8 +541,59 @@ mod tests {
         );
 
         drop(guard);
-        let status = child.wait().unwrap();
-        assert!(status.success());
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_interprocess_flock_excludes_child_process() {
+        if run_as_lock_child() {
+            return;
+        }
+        let dir = crate::test_dir("interprocess_lock");
+        let dev = dir.join("uio0");
+        fs::write(&dev, b"").unwrap();
+        let path = dev.to_str().unwrap().to_string();
+
+        let parent_lock = DeviceLock::open(&path).unwrap();
+        assert_child_excluded(
+            &path,
+            "lock::tests::test_interprocess_flock_excludes_child_process",
+            parent_lock.lock().unwrap(),
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_from_open_file_shares_registry_and_outlives_source_descriptor() {
+        if run_as_lock_child() {
+            return;
+        }
+        let dir = crate::test_dir("from_open_file");
+        let dev = dir.join("uio1");
+        fs::write(&dev, b"").unwrap();
+        let path = dev.to_str().unwrap().to_string();
+
+        // Stands in for the mapper's open `/dev/uioN` descriptor.
+        let source = File::open(&dev).unwrap();
+        let from_fd = DeviceLock::from_open_file(&source, &path).unwrap();
+        let reopened = DeviceLock::open(&path).unwrap();
+        assert!(
+            Arc::ptr_eq(&from_fd.0, &reopened.0),
+            "the same inode must share one registry entry"
+        );
+        drop(reopened);
+
+        // The mapper closes its descriptor on unmap; the lock's duplicate must keep excluding
+        // other processes.
+        drop(source);
+        assert_child_excluded(
+            &path,
+            "lock::tests::test_from_open_file_shares_registry_and_outlives_source_descriptor",
+            from_fd.lock().unwrap(),
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

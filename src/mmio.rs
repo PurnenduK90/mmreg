@@ -104,23 +104,21 @@ pub(crate) fn irq_wait(file: &File, timeout: Duration) -> io::Result<Option<u32>
     use std::time::Instant;
 
     let fd = file.as_raw_fd();
+    // `None` (e.g. `Duration::MAX`): no deadline, wait for an interrupt indefinitely.
     let deadline = Instant::now().checked_add(timeout);
     loop {
-        let remaining_ms = match deadline {
-            Some(end) => {
-                let rem = end.saturating_duration_since(Instant::now());
-                i32::try_from(rem.as_millis()).unwrap_or(i32::MAX)
-            }
-            None => i32::MAX,
-        };
         let mut pfd = libc::pollfd {
             fd,
             events: libc::POLLIN,
             revents: 0,
         };
-        let ready = unsafe { libc::poll(&mut pfd, 1, remaining_ms) };
+        let ready = unsafe { libc::poll(&mut pfd, 1, poll_timeout_ms(deadline, Instant::now())) };
         if ready == 0 {
-            return Ok(None);
+            // `poll` waits at most `i32::MAX` ms (~24.8 days): keep waiting until the deadline.
+            match deadline {
+                Some(end) if Instant::now() < end => continue,
+                _ => return Ok(None),
+            }
         }
         if ready < 0 {
             let err = io::Error::last_os_error();
@@ -148,6 +146,17 @@ pub(crate) fn irq_wait(file: &File, timeout: Duration) -> io::Result<Option<u32>
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
         }
     }
+}
+
+/// `poll(2)` timeout until `deadline`: `-1` (infinite) without one, otherwise the remaining time
+/// in milliseconds, rounded up so `poll` never returns just before the deadline and spins, and
+/// capped at `i32::MAX`.
+#[cfg(unix)]
+fn poll_timeout_ms(deadline: Option<std::time::Instant>, now: std::time::Instant) -> i32 {
+    deadline.map_or(-1, |end| {
+        let nanos = end.saturating_duration_since(now).as_nanos();
+        i32::try_from(nanos.div_ceil(1_000_000)).unwrap_or(i32::MAX)
+    })
 }
 
 #[cfg(not(unix))]
@@ -285,6 +294,31 @@ pub(crate) fn test_pipe() -> (File, File) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_poll_timeout_ms_infinite_rounding_and_cap() {
+        use std::time::Instant;
+        let now = Instant::now();
+        assert_eq!(poll_timeout_ms(None, now), -1);
+        assert_eq!(poll_timeout_ms(Some(now), now), 0);
+        assert_eq!(
+            poll_timeout_ms(now.checked_sub(Duration::from_secs(1)), now),
+            0
+        );
+        assert_eq!(
+            poll_timeout_ms(Some(now + Duration::from_micros(1)), now),
+            1
+        );
+        assert_eq!(
+            poll_timeout_ms(Some(now + Duration::from_millis(500)), now),
+            500
+        );
+        // Beyond `poll`'s range (~24.8 days): capped, and `irq_wait` polls again.
+        let far = now + Duration::from_secs(60 * 24 * 3600);
+        assert_eq!(poll_timeout_ms(Some(far), now), i32::MAX);
+        assert!(now.checked_add(Duration::MAX).is_none());
+    }
 
     #[test]
     fn test_page_size_and_volatile_access() {

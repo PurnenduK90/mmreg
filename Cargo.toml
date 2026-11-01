@@ -1,10 +1,18 @@
+[workspace]
+# The C ABI (`libmmreg.so`, `libmmreg.a`) is its own crate so this one stays a plain Rust library.
+members = ["bindings/c"]
+# Plain `cargo build` / `cargo test` cover only the Rust crate and CLI; use `-p mmreg-capi` or
+# `--workspace` for the C library. (On Windows MSVC the CLI and `mmreg.dll` share `mmreg.pdb`, so
+# build them in separate invocations there.)
+default-members = ["."]
+
 [package]
 name = "mmreg"
-version = "1.1.1"
+version = "1.2.2"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
-description = "Safe, concurrent 8/16/32/64-bit memory-mapped IO (UIO and /dev/mem) register access for Rust. Library and CLI for embedded Linux platforms."
+description = "Safe, concurrent 8/16/32/64-bit memory-mapped IO (UIO and /dev/mem) register access for Rust, C, and Python. Library and CLI for embedded Linux platforms."
 license = "MIT"
 repository = "https://github.com/PurnenduK90/mmreg"
 readme = "README.md"

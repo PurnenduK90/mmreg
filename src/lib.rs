@@ -42,7 +42,7 @@ mod validation;
 pub use device::{uio, Device, DeviceBuilder};
 pub use error::MmregError;
 pub use interface::Interface;
-pub use lock::LockGuard;
+pub use lock::{LockGuard, OwnedLockGuard};
 pub use memregs::{MapperType, MemoryMapper, Width};
 pub use register::{Register, SubRegister};
 pub use validation::{SafetyProfile, ValidationCheck};
@@ -103,6 +103,61 @@ pub(crate) fn test_dir(prefix: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Shared byte-addressable mock [`MemoryMapper`] used across unit tests in `device` and `interface`.
+#[cfg(test)]
+pub(crate) struct TestMockMapper {
+    bytes: std::sync::Mutex<Vec<u8>>,
+    mapped: bool,
+}
+
+#[cfg(test)]
+impl TestMockMapper {
+    pub(crate) fn boxed(size: usize) -> Box<Self> {
+        Box::new(Self {
+            bytes: std::sync::Mutex::new(vec![0; size]),
+            mapped: false,
+        })
+    }
+}
+
+#[cfg(test)]
+impl MemoryMapper for TestMockMapper {
+    fn map(&mut self, _address: u64, _size: usize) -> Result<(), MmregError> {
+        self.mapped = true;
+        Ok(())
+    }
+
+    fn unmap(&mut self) {
+        self.mapped = false;
+    }
+
+    fn is_mapped(&self) -> bool {
+        self.mapped
+    }
+
+    fn read(&self, offset: u32, width: Width) -> u64 {
+        let at = offset as usize;
+        let bytes = self.bytes.lock().unwrap();
+        match width {
+            Width::U8 => u64::from(bytes[at]),
+            Width::U16 => u64::from(u16::from_ne_bytes(bytes[at..at + 2].try_into().unwrap())),
+            Width::U32 => u64::from(u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap())),
+            Width::U64 => u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap()),
+        }
+    }
+
+    fn write(&self, offset: u32, width: Width, value: u64) {
+        let at = offset as usize;
+        let mut slice = self.bytes.lock().unwrap();
+        match width {
+            Width::U8 => slice[at] = value as u8,
+            Width::U16 => slice[at..at + 2].copy_from_slice(&(value as u16).to_ne_bytes()),
+            Width::U32 => slice[at..at + 4].copy_from_slice(&(value as u32).to_ne_bytes()),
+            Width::U64 => slice[at..at + 8].copy_from_slice(&value.to_ne_bytes()),
+        }
+    }
 }
 
 #[cfg(test)]

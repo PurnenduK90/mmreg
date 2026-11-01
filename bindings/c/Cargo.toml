@@ -1,0 +1,24 @@
+[package]
+name = "mmreg-capi"
+version = "1.2.2"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Purnendu Kumar <purnendu@kumargaur.com>"]
+description = "C ABI for mmreg: libmmreg.so / libmmreg.a, mmreg.h and mmreg.pc (also loaded by the Python ctypes binding)."
+license = "MIT"
+repository = "https://github.com/PurnenduK90/mmreg"
+publish = false
+
+[lib]
+# Named `mmreg` so the outputs are `libmmreg.so` and `libmmreg.a`.
+name = "mmreg"
+crate-type = ["cdylib", "staticlib"]
+doc = false
+
+[features]
+# Raw /dev/mem access for addresses no UIO region covers: debug and bring-up builds only.
+debug = ["mmreg-core/debug"]
+
+[dependencies]
+# No JSON safety-profile parser: the C ABI does not expose `SafetyProfile`.
+mmreg-core = { package = "mmreg", path = "../..", version = "1.2.2", default-features = false }

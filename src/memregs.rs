@@ -1,7 +1,7 @@
 //! Memory mapper backends: the `MemoryMapper` trait and its `/dev/mem` / UIO implementation.
 
 use crate::error::MmregError;
-use crate::memcheck::UioMap;
+use crate::memcheck::{uio_address_invalid, uio_region_raw};
 use crate::mmio::{open_device, page_size, Mapping};
 use std::fs::File;
 use std::path::Path;
@@ -239,31 +239,17 @@ fn uio_data_offset(
     address: u64,
     size: usize,
 ) -> Result<usize, MmregError> {
-    let invalid = |details: &str| MmregError::UioAddressInvalid {
-        device_path: device_path.to_string(),
-        region_index,
-        address,
-        details: details.to_string(),
-    };
-    let map_dir = Path::new(device_path)
-        .file_name()
-        .map(|dev| {
-            sysfs_uio_root
-                .join(dev)
-                .join("maps")
-                .join(format!("map{region_index}"))
-        })
-        .ok_or_else(|| invalid("device path has no file name"))?;
-    let region = UioMap::read(&map_dir)
-        .ok_or_else(|| invalid("cannot read the region's sysfs addr/size"))?;
+    let (_, region) = uio_region_raw(sysfs_uio_root, device_path, region_index, address)?;
+    let invalid =
+        |details: String| uio_address_invalid(device_path, region_index, address, details);
     if !region.contains(address, size) {
-        return Err(invalid(&format!(
+        return Err(invalid(format!(
             "range is outside the region 0x{:X} + 0x{:X}",
             region.addr, region.size
         )));
     }
     usize::try_from(address - (region.addr & !(page_size() - 1)))
-        .map_err(|_| invalid("offset overflows usize"))
+        .map_err(|_| invalid("offset overflows usize".into()))
 }
 
 #[cfg(test)]

@@ -80,14 +80,14 @@ for it.
 | *(core)* | `Device` over UIO, `Interface`, locking, interrupts, blueprint and pre-flight checks | always |
 | `debug` | `/dev/mem` backend for addresses no UIO device covers (debug and bring-up builds; since 1.0.0) | off |
 | `profile` | JSON safety profiles (since 1.0.0) | on |
-| `capi` | C ABI (`libmmreg.a`, `libmmreg.so`, `mmreg.h`); the Python binding uses it | off |
 
 Block files add no feature: they are read by the Python package (standard-library `json`), not by
-the Rust crate.
+the Rust crate. The C ABI is not a feature either: it is the separate `mmreg-capi` crate in
+`bindings/c` (`libmmreg.a`, `libmmreg.so`, `mmreg.h`), which the Python binding loads.
 
 Example builds: CLI for development images = `--features debug`; CLI for release images =
-defaults (UIO only); library for production applications = `--no-default-features --features capi`
-(UIO only, no parser).
+defaults (UIO only); library for production applications = `-p mmreg-capi` (UIO only, no
+parser).
 
 Without `debug`, `mmreg read|write <address>` still works for any address inside a UIO device's
 region; other addresses are refused with `[E_DEBUG_DISABLED]` before anything is opened. Safety
@@ -174,28 +174,28 @@ profile checks read registers by physical address too, so outside UIO regions th
 
 ## 1.2 — C and Python bindings (replaces UIO helper libraries for C / Python)
 
-- [ ] **C ABI (`capi` feature):** `cdylib` + `staticlib`, opaque `mmreg_dev *`, `int` error
+- [x] **C ABI (`mmreg-capi` crate in `bindings/c`):** `cdylib` + `staticlib`, opaque `mmreg_dev *`, `int` error
   returns with `mmreg_last_error()` (code + message, thread-local), no panics across the boundary.
   The release profile's `panic = "abort"` applies to the library too, so a panic would kill the
   host program: no `unwrap`/indexing panics on the C path (clippy `unwrap_used` / `indexing_slicing`
-  denied in the `capi` module), and `catch_unwind` at every entry for builds that unwind.
+  denied in the C ABI crate), and `catch_unwind` at every entry for builds that unwind.
   `mmreg_open_uio(name, flags)`, `mmreg_open_uio_path`, `mmreg_open_addr`, `mmreg_close`,
   `mmreg_rd{8,16,32,64}`, `mmreg_wr{8,16,32,64}`, `mmreg_update32`, `mmreg_lock` /
   `mmreg_unlock`, `mmreg_irq_unmask`, `mmreg_irq_wait` (1 interrupt / 0 timeout / -1 error,
   count out-parameter), `mmreg_find_uio(name, buf, len)`, and an `MMREG_FIELD(v, mask, shift)`
   macro for generated headers.
-- [ ] **`mmreg.h`:** checked in, with a test comparing it with the exported symbols (cbindgen as
+- [x] **`mmreg.h`:** checked in, with a test comparing it with the exported symbols (cbindgen as
   a dev-only step). `mmreg.pc` for `pkg-config`; static library usable without Cargo at link time.
-- [ ] **C example and test:** small C program against the static library, built and run in CI,
+- [x] **C example and test:** small C program against the static library, built and run in CI,
   including the lock interop test (C and Rust processes on one mock device).
-- [ ] **Python binding:** pure-Python package (`bindings/python/`) using `ctypes` on
+- [x] **Python binding:** pure-Python package (`bindings/python/`) using `ctypes` on
   `libmmreg.so`, so targets need no compiler, PyO3 or wheel build. Context managers for the device
   and the lock; `MmregError` carrying the `[E_*]` code. Same API shape as Rust. Inline
   definitions for experiments without a block file: `d.define("CTRL", offset=0x8,
   fields={"EN": "0"})`, then `d.CTRL.EN = 1`.
-- [ ] **Packaging notes** for Yocto and Buildroot (constraints in
+- [x] **Packaging notes** for Yocto and Buildroot (constraints in
   [Roadmap Reference → Build Environments](docs/developers/05-roadmap-reference.md#build-environments)):
-  library-only build (`--no-default-features --features capi`), static library + header + `.pc`,
+  library-only build (`-p mmreg-capi`), static library + header + `.pc`,
   Python module; release-image CLI vs `debug` CLI; an example Yocto recipe in `docs/`.
 
 ## 1.3 — Python by name (block files, debug and experiments)

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmreg"
+# Single source: `__version__` in mmreg/__init__.py (checked against Cargo.toml by a mmreg-capi test).
+dynamic = ["version"]
+description = "Safe, concurrent 8/16/32/64-bit memory-mapped IO (UIO and /dev/mem) register access for Linux (ctypes binding over libmmreg)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Purnendu Kumar", email = "purnendu@kumargaur.com" }]
+requires-python = ">=3.8"
+dependencies = []
+keywords = ["embedded", "mmio", "uio", "registers", "hardware"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/PurnenduK90/mmreg"
+Documentation = "https://github.com/PurnenduK90/mmreg/blob/main/docs/users/04-library-usage.md#9-python-binding-bindingspythonmmreg"
+
+[tool.setuptools]
+packages = ["mmreg"]
+
+[tool.setuptools.dynamic]
+version = { attr = "mmreg.__version__" }
+
+[tool.setuptools.package-data]
+# `libmmreg.so` is present only in the staging copy `just python-wheel` builds from; a plain
+# `pip install ./bindings/python` installs the pure-Python package and uses the system library.
+mmreg = ["py.typed", "libmmreg.so"]

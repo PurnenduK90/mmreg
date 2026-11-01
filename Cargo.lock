@@ -10,7 +10,14 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "mmreg"
-version = "1.1.1"
+version = "1.2.2"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "mmreg-capi"
+version = "1.2.2"
+dependencies = [
+ "mmreg",
 ]

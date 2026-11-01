@@ -139,7 +139,7 @@ Raise the MSRV only when the oldest supported Yocto / Buildroot LTS does.
 
 - Recipes use `inherit cargo` (or `cargo_c` for the C library) with crates listed in the recipe
   (`cargo-update-recipe-crates`), so builds are offline: keep dependencies few, and the
-  `capi` library build (`--no-default-features --features capi`) dependency-free apart from `libc`.
+  C library build (`-p mmreg-capi`) dependency-free apart from `libc`.
 - A C consumer needs `libmmreg.a` (static, so the image does not need the Rust standard library as a
   shared object), `mmreg.h` and `mmreg.pc` in the sysroot; the recipe installs them into
   `${libdir}`, `${includedir}`, `${libdir}/pkgconfig`.

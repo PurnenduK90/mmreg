@@ -1,6 +1,7 @@
 # 6. Troubleshooting & Error Reference
 
-Every error (CLI and library) starts with a stable `[E_*]` code (`MmregError::code()` in Rust),
+Every error (CLI, Rust, C and Python) starts with a stable `[E_*]` code (`MmregError::code()` in Rust,
+`mmreg_last_error_code()` in C, `MmregError.code` in Python),
 names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 
 ---
@@ -52,16 +53,33 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 | `E_OUT_OF_BOUNDS` | `offset + access_bytes` exceeds the mapped window size (or `size == 0`). | Increase the window size or fix the byte offset. |
 | `E_READ_ONLY` | A register write, `update_u32`, or `irq_unmask` was attempted on a `Device` opened with `.read_only()`. | Open the `Device` without `.read_only()` and ensure write permission (`0660`) on `/dev/uioN`. |
 | `E_LOCK_OPEN` | The lock file cannot be opened: `/dev/uioN` (UIO devices) or the page lock file (`/dev/mem`). | For UIO, give the user read access to `/dev/uioN`; for `/dev/mem`, pre-create `/run/lock/mmreg` with mode `1777` (`sudo mkdir -m 1777 -p /run/lock/mmreg`) if `/run/lock` is root-only (`0755`). |
-| `E_LOCK_ACQUIRE` | `flock` on the lock file failed. | Check the filesystem supports `flock`. |
+| `E_LOCK_ACQUIRE` | `flock` on the lock file failed. C / Python: `mmreg_unlock` (leaving `with d.lock():`) without a matching lock, or from a thread that does not hold it. | Check the filesystem supports `flock`; unlock on the thread that locked. |
 | `E_LOCK_RANGE` | `dev.lock()` on a `/dev/mem` or custom-mapper window covering more than 64 pages (one open lock file per page). | Open a smaller `Device` covering only the registers of the sequence. |
 
 ## API
 
 | Code | Meaning | Remediation |
 | :--- | :--- | :--- |
-| `E_REG_NOT_FOUND` | No register of that name in the `Interface`. | Use one of the names listed in the message. |
-| `E_SUBREG_NOT_FOUND` | No subregister of that name in the register. | Use one of the names listed in the message. |
-| `E_SUBREG_RANGE` | A subregister has `msb < lsb` or `msb > 31`. | Fix the bit range. |
+| `E_REG_NOT_FOUND` | No register of that name in the `Interface` (Python: no `define()`d register or attribute of that name on the `Device`). | Use one of the names listed in the message, or `define()` the register first. |
+| `E_SUBREG_NOT_FOUND` | No subregister of that name in the register (Python: a field, or a `w1c=` name that is not one of the register's fields). | Use one of the names listed in the message. |
+| `E_SUBREG_RANGE` | A subregister has `msb < lsb` or `msb > 31`. Python: a field bit specification that is not `"7:4"`, `"[7:4]"`, `"0"`, `0` or `(7, 4)`, or fields that overlap. | Fix the bit range. |
+
+## C & Python Bindings
+
+These codes come from the C ABI (`mmreg_last_error_code()`) and the Python package
+(`MmregError.code`) only; every other code above is shared with Rust and the CLI.
+
+| Code | Meaning | Remediation |
+| :--- | :--- | :--- |
+| `E_INVALID_ARG` | A `NULL` pointer, unknown flag bits, `MMREG_O_MOCK` without `MMREG_O_FORCE`, `MMREG_REGION(n)` on `mmreg_open_addr`, or a mock window over 16 MiB. Python also: a value, offset, mask or timeout that is not an integer in range (`bool` only for 1-bit fields, no `float`), a string with a NUL byte, an invalid register or field name (not an identifier, starts with `_`, or shadows an attribute such as `size`), `fields` / `w1c` of the wrong type, or a closed `Device`. | Fix the argument named in the message. |
+| `E_BUFFER_TOO_SMALL` | `mmreg_find_uio`'s buffer cannot hold the `/dev/uioN` path and its NUL. | Pass a larger buffer (the message gives the size needed; 64 bytes is plenty). |
+| `E_INTERNAL_PANIC` | A bug in mmreg panicked inside a C ABI call; the panic was caught at the boundary. | Report it with the message; the handle is still valid but the failed call had no effect or an unknown one. |
+| `E_LIB_LOAD` | Python: `libmmreg` was not found, cannot be loaded (built for another CPU or C library), or has a different major version than the package. The error is also an `OSError`. | Install a wheel that bundles the library, install `libmmreg.so`, or set `MMREG_LIB_PATH`; see [Installation](02-installation.md#python-package). |
+| `E_NOT_COPYABLE` | Python: `copy.copy`, `copy.deepcopy` or `pickle` of a `Device`, which owns its C handle. The error is also a `TypeError`. | Share the `Device` object instead of copying it. |
+| `E_UNKNOWN` | Python: a C call failed without setting an error code (should not happen). | Report it. |
+
+In Python every exception the package raises is an `MmregError`. A missing register or field is
+also an `AttributeError`, so `hasattr(d, "CTRL")` and `getattr(d, "CTRL", None)` work.
 
 ## CLI
 

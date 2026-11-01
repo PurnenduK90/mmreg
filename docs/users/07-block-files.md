@@ -286,6 +286,7 @@ d.CTRL.MODE = "OPEN_DRAIN"                 # field write, access rules applied
 d.CTRL = 0x0000_0001                       # whole-register write
 d.DEBOUNCE[3]                              # array element
 d.dump(diff_reset=True)                    # every register, skipping read side effects
+d.watch("IRQ_STATUS.CHANGE", interval=0.1) # poll by name (or d.CTRL.MODE.watch()), Ctrl-C to stop
 with d.lock():                             # several accesses under one lock
     ...
 d.wait_irq(timeout=1.0)                    # UIO interrupt, None on timeout

@@ -53,9 +53,13 @@ replacement that refuses accesses likely to hang the bus instead of performing t
 ## CLI
 ```sh
 mmreg read 0x4000_0000
+mmreg read axi_gpio 0x00 --count 8       # block read (hexdump-style, one lock per page)
 mmreg --width 16 read axi_gpio 0x04      # UIO device by name + offset (works without `debug`)
 mmreg write axi_gpio 0x00 0x0000_0001
 mmreg write 0x4000_0000 0xDEADBEEF
+mmreg watch axi_gpio 0x04 --interval 50  # poll and print transitions
+mmreg --unmask irq axi_timer 5000        # wait up to 5 s for a UIO interrupt
+mmreg --format json read axi_gpio 0x04   # hex | dec | bin | json output formats
 mmreg --dec write 0x4000_0000 100        # or: mmreg write 0x4000_0000 0d100
 mmreg --validate zynqmp_gem3.json read 0xFF0E_0000
 mmreg --force read 0x4000_0000           # skip blueprint and pre-flight checks

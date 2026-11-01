@@ -168,3 +168,17 @@
         * `python-oldest` CI job runs the Python tests on Python 3.8 (installed with `uv`); `just test-python [python]` takes the interpreter and treats warnings as errors
     * Documentation
         * `docs/users/07-block-files.md`: the `~` volatile marker, and `$MMREG_INSTANCES` entries may be directories (their `*.json` files in name order), as implemented
+* **[1.4.0]** CLI Block Read, `watch`, `irq`, Output Formats (`--format hex|dec|bin|json`) & Python `watch()`
+    * CLI (`src/main.rs`, `src/device.rs`)
+        * Block read (`mmreg read <address | uio-name offset> -c/--count <N>`): multi-word hexdump-style read (`16` bytes per row: `16`×`u8`, `8`×`u16`, `4`×`u32`, `2`×`u64`) through `Device::read_block`
+        * `watch` (`mmreg watch <address | uio-name offset> [-i/--interval <ms>] [-c/--count <N>]`): rate-limited polling (default `100` ms) printing the initial value and subsequent changes (`old -> new`, or JSON lines with `--format json`)
+        * `irq` (`mmreg [-u/--unmask] irq <uio-name> [timeout_ms]`): waits for a UIO interrupt from the shell (`poll(POLLIN)` + 4-byte `read`), optionally unmasking first (`-u` / `--unmask`), printing the kernel cumulative interrupt count, or `[E_CLI_IRQ_TIMEOUT]` with exit status `2` on timeout (`1` stays for failures)
+        * Output formats (`-F` / `--format <hex|dec|bin|json>`, default `hex`): hexadecimal (`0x...`), decimal, zero-padded binary (`0b...`), and structured JSON for `read` (single and `--count N`), `write`, `watch`, and `irq`
+        * `--count`, `--interval` and the `irq` timeout are decimal quantities whatever `--dec` says (`0x` selects hex), unlike addresses, offsets and values
+        * New CLI error codes: `[E_CLI_MISSING_COUNT]`, `[E_CLI_INVALID_COUNT]`, `[E_CLI_MISSING_INTERVAL]`, `[E_CLI_INVALID_INTERVAL]`, `[E_CLI_MISSING_FORMAT]`, `[E_CLI_INVALID_FORMAT]`, `[E_CLI_MISSING_UIO]`, `[E_CLI_INVALID_TIMEOUT]`, `[E_CLI_IRQ_TIMEOUT]`, and `[E_CLI_OPT_CONFLICT]` (an option the command does not use)
+    * Rust API (`src/device.rs`)
+        * `Device::read_block(offset, width, &mut [u64])`: reads consecutive words after checking the whole range, holding one lock per page (of the kernel's page size, or the UIO device lock) across the words in that page
+    * Python `watch()` (`bindings/python/mmreg/`)
+        * `d.watch(*targets, interval=0.1, count=None, only_volatile=False, side_effects=False, file=None)` on `Device`, plus `.watch(...)` on every register and field (`BlockRegister`, `BlockField`, `InlineRegister`, `InlineField`): polls registers or fields by name (`"CTRL"`, `"IRQ_STATUS.CHANGE"`, `"DEBOUNCE[2].CYCLES"`) or object every `interval` seconds (at least 1 ms, like the CLI) until `count` polls or Ctrl-C, skipping `rclr`/`rset` registers unless `side_effects=True`, and printing initial values and changes (`old -> new`) formatted as `dump` formats them (`~` marks volatile fields); it keeps only each target's last value, so memory stays constant however long it runs
+    * Repository
+        * `.gitattributes` (`* text=auto eol=lf`): the 1.3.1 / 1.3.2 commits stored 13 files (Python modules and tests, docs, `TODO.md`, `ci.yml`, `justfile`) with CRLF line endings written by Windows tools; a CRLF `justfile` breaks its `#!/usr/bin/env bash` recipes (`python-wheel`, `python-wheel-test`) on Linux. All are LF again

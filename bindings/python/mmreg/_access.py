@@ -1,4 +1,4 @@
-"""Registers, fields, arrays and groups of a `Block`, bound to a `Device`, and `Device.dump()`.
+"""Registers, fields, arrays and groups of a `Block`, bound to a `Device`, and `Device.dump()` / `watch()`.
 
 Objects are created on access from the immutable specifications in `block`, so a device with a
 large block holds only its top-level registers; arrays and groups bind their elements on demand.
@@ -6,11 +6,15 @@ large block holds only its top-level registers; arrays and groups bind their ele
 
 from __future__ import annotations
 
+import math
 import operator
-from typing import Any, Dict, Iterator, List, Optional, Union
+import sys
+import time
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from . import (
     Device,
+    InlineField,
     InlineRegister,
     MmregError,
     _api_attr_error,
@@ -53,17 +57,22 @@ def _display_name(spec: FieldSpec, name: str) -> str:
     return f"{name}~" if spec.is_volatile else name
 
 
+def _format_field_value(spec: FieldSpec, value: int) -> str:
+    """A field value as `dump` and `watch` print it: the enum name, else decimal below 10 (and for
+    1-bit fields), else hex."""
+    decoded = spec.enum_spec.decode(value) if spec.enum_spec is not None else value
+    if isinstance(decoded, EnumValue):
+        return decoded.name
+    if spec.enum_spec is None and (value < 10 or spec.width == 1):
+        return str(value)
+    return f"0x{value:x}"
+
+
 def _format_field(spec: FieldSpec, raw: int) -> str:
     name = _display_name(spec, spec.name)
     if spec.is_write_only:
         return f"{name}=-"
-    value = 0 if spec.reads_zero else (raw & spec.mask) >> spec.lsb
-    decoded = spec.enum_spec.decode(value) if spec.enum_spec is not None else value
-    if isinstance(decoded, EnumValue):
-        return f"{name}={decoded.name}"
-    if spec.enum_spec is None and (value < 10 or spec.width == 1):
-        return f"{name}={value}"
-    return f"{name}=0x{value:x}"
+    return f"{name}={_format_field_value(spec, 0 if spec.reads_zero else (raw & spec.mask) >> spec.lsb)}"
 
 
 class _BoundView:
@@ -532,6 +541,13 @@ def attach_block(device: Device, block: Block) -> None:
     object.__setattr__(device, "_registers", registers)
 
 
+def _format_inline_register(reg_obj: InlineRegister, raw: int) -> str:
+    head = f"{reg_obj.name} @ {_format_offset(reg_obj.offset)} = {_format_hex_value(raw, 32)}"
+    fields = reg_obj._fields.values()
+    parts = ", ".join(f"{f.name}={(raw & f.mask) >> f.lsb}" for f in fields)
+    return f"{head}  ({parts})" if parts else head
+
+
 def format_device_dump(device: Device, *, diff_reset: bool = False, side_effects: bool = False) -> str:
     """`Device.dump()`: every block register (skipping `rclr` / `rset` ones unless `side_effects=True`),
     then the inline registers."""
@@ -547,8 +563,155 @@ def format_device_dump(device: Device, *, diff_reset: bool = False, side_effects
     inline = [r for r in device._registers.values() if isinstance(r, InlineRegister)]
     for reg_obj in sorted(inline, key=lambda r: r.offset):
         raw = int(reg_obj.read())
-        head = f"{reg_obj.name} @ {_format_offset(reg_obj.offset)} = {_format_hex_value(raw, 32)}"
-        fields = reg_obj._fields.values()
-        parts = ", ".join(f"{f.name}={(raw & f.mask) >> f.lsb}" for f in fields)
-        lines.append(f"{head}  ({parts})" if parts else head)
+        lines.append(_format_inline_register(reg_obj, raw))
     return "\n".join(lines)
+
+
+WatchTarget = Union[BlockRegister, BlockField, InlineRegister, InlineField]
+_WATCH_TYPES = (BlockRegister, BlockField, InlineRegister, InlineField)
+# Shortest poll interval, as the CLI's `--interval 1`: `watch` never busy-loops on the bus.
+_MIN_WATCH_INTERVAL = 0.001
+
+
+def _resolve_watch_path(device: Device, path: str) -> List[WatchTarget]:
+    """Resolves a name/path like `'CTRL'`, `'CTRL.MODE'`, `'DEBOUNCE[3].CYCLES'` or `'CH[0].STAT'` on `device`."""
+    cur: Any = device
+    for part in path.split("."):
+        if not part:
+            raise MmregError("E_INVALID_ARG", f"[E_INVALID_ARG] Invalid watch target path {path!r}.")
+        while "[" in part:
+            if not part.endswith("]"):
+                raise MmregError("E_INVALID_ARG", f"[E_INVALID_ARG] Invalid array syntax in watch target {path!r}.")
+            head, _, tail = part[:-1].partition("[")
+            if head:
+                cur = cur[head]
+            if not isinstance(cur, _BoundArray):
+                raise MmregError(
+                    "E_INVALID_ARG",
+                    f"[E_INVALID_ARG] Target {head or part!r} in {path!r} is not an array.",
+                )
+            try:
+                idx = int(tail.strip(), 0)
+            except ValueError as exc:
+                raise MmregError("E_INVALID_ARG", f"[E_INVALID_ARG] Invalid array index {tail!r} in {path!r}.") from exc
+            cur = cur[idx]
+            part = ""
+        if part:
+            cur = cur[part]
+
+    if isinstance(cur, _WATCH_TYPES):
+        return [cur]
+    if isinstance(cur, BlockRegisterArray):
+        return list(cur)
+    if isinstance(cur, (BlockRegisterGroup, BlockRegisterGroupArray)):
+        out: List[WatchTarget] = []
+        groups = list(cur) if isinstance(cur, BlockRegisterGroupArray) else [cur]
+        for grp in groups:
+            for cspec in grp._spec.children.values():
+                child = grp[cspec.name]
+                if isinstance(child, BlockRegister):
+                    out.append(child)
+                elif isinstance(child, BlockRegisterArray):
+                    out.extend(child)
+        return out
+    raise MmregError("E_INVALID_ARG", f"[E_INVALID_ARG] Cannot watch {path!r} ({type(cur).__name__}).")
+
+
+def _sample_watch_target(target: WatchTarget, *, side_effects: bool) -> Tuple[int, str]:
+    """Reads `target` once: `(raw value, line)`, formatted as `dump` formats it."""
+    if isinstance(target, BlockRegister):
+        raw = int(target.read(side_effects=side_effects))
+        return raw, target._format_decoded(raw)
+    if isinstance(target, InlineRegister):
+        raw = int(target.read())
+        return raw, _format_inline_register(target, raw)
+    if isinstance(target, BlockField):
+        raw = int(target.read(side_effects=side_effects))
+        label = _display_name(target._spec, f"{target.reg_name}.{target.name}")
+        return raw, f"{label} @ {_format_offset(target.offset)} = {_format_field_value(target._spec, raw)}"
+    raw = int(target.read())
+    return raw, f"{target.reg_name}.{target.name} @ {_format_offset(target.offset)} = {raw}"
+
+
+def _check_watch_options(interval: float, count: Optional[int]) -> None:
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+        raise MmregError("E_INVALID_ARG", f"[E_INVALID_ARG] Watch interval {interval!r} must be a number of seconds.")
+    if math.isnan(interval) or math.isinf(interval) or interval < _MIN_WATCH_INTERVAL:
+        raise MmregError(
+            "E_INVALID_ARG",
+            f"[E_INVALID_ARG] Watch interval {interval!r} must be a finite number of seconds, "
+            f"at least {_MIN_WATCH_INTERVAL} (1 ms).",
+        )
+    if count is not None and _check_uint(count, 64, "Watch count") < 1:
+        raise MmregError("E_INVALID_ARG", "[E_INVALID_ARG] Watch count must be >= 1.")
+
+
+def _watch_all(device: Device, *, only_volatile: bool, side_effects: bool) -> List[WatchTarget]:
+    """The readable registers of the block (without read side effects unless `side_effects`), then
+    the inline ones; with `only_volatile`, block registers with a field hardware changes."""
+    targets: List[WatchTarget] = []
+    block: Optional[Block] = device.block
+    for entry in block.flat_registers if block is not None else ():
+        spec = entry.spec
+        if spec.all_na or not spec.is_readable or (spec.has_read_side_effect and not side_effects):
+            continue
+        if only_volatile and not any(f.is_volatile for f in spec.fields.values()):
+            continue
+        targets.append(BlockRegister(device, spec, offset=entry.offset, name=entry.full_name, source=block.source))
+    if not only_volatile:
+        inline = [r for r in device._registers.values() if isinstance(r, InlineRegister)]
+        targets.extend(sorted(inline, key=lambda r: r.offset))
+    return targets
+
+
+def watch_targets(
+    device: Device,
+    targets: Tuple[Union[str, WatchTarget], ...],
+    *,
+    interval: float = 0.1,
+    count: Optional[int] = None,
+    only_volatile: bool = False,
+    side_effects: bool = False,
+    file: Any = None,
+) -> None:
+    """`Device.watch()`: polls `targets` (all readable registers when empty) every `interval`
+    seconds, `count` times or until Ctrl-C, printing each value and then each change (`old -> new`).
+
+    Memory stays constant however long it runs: only the last value of each target is kept.
+    """
+    device._require_handle()
+    _check_watch_options(interval, count)
+    resolved: List[WatchTarget] = []
+    if not targets:
+        resolved = _watch_all(device, only_volatile=only_volatile, side_effects=side_effects)
+    for item in targets:
+        if isinstance(item, str):
+            resolved.extend(_resolve_watch_path(device, item))
+        elif isinstance(item, _WATCH_TYPES) and item._device is device:
+            resolved.append(item)
+        else:
+            raise MmregError(
+                "E_INVALID_ARG",
+                f"[E_INVALID_ARG] Watch target {item!r} must be a register or field (name or object) of this Device.",
+            )
+
+    out_stream = sys.stdout if file is None else file
+    last: List[Optional[Tuple[int, str]]] = [None] * len(resolved)
+    poll = 0
+    try:
+        while True:
+            for idx, target in enumerate(resolved):
+                raw, text = _sample_watch_target(target, side_effects=side_effects)
+                prev = last[idx]
+                if prev is None:
+                    print(text, file=out_stream, flush=True)
+                elif prev[0] != raw:
+                    head, _, new_value = text.partition(" = ")
+                    print(f"{head} = {prev[1].partition(' = ')[2]} -> {new_value}", file=out_stream, flush=True)
+                last[idx] = (raw, text)
+            poll += 1
+            if count is not None and poll >= count:
+                return
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        return

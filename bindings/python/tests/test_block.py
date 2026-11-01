@@ -683,6 +683,121 @@ class TestNamesChecksAndBinding(unittest.TestCase):
         with mock.patch("sys.stdout", io.StringIO()):
             self.assertEqual(cli_main(["check", *files]), 0)
 
+    def test_watch_registers_and_fields(self) -> None:
+        with mmreg.open(
+            "gpio0", mock=True, force=True, blocks_path=EXAMPLES / "blocks", instances_path=EXAMPLES / "instances"
+        ) as d:
+            scratch = d.define("SCRATCH", at=0x80, fields={"LO": "15:0", "HI": "31:16"})
+            scratch.LO = 1
+            d.CTRL.MODE = "PUSH_PULL"
+            d.IRQ_STATUS.CHANGE = 0
+
+            # 1. Watch a single BlockField across 3 polls, mutating on sleep
+            step = 0
+
+            def fake_sleep(_sec: float) -> None:
+                nonlocal step
+                step += 1
+                if step == 1:
+                    d.CTRL.MODE = "OPEN_DRAIN"
+                elif step == 2:
+                    d.IRQ_STATUS = 0x05
+                    scratch.LO = 9
+
+            buf = io.StringIO()
+            with mock.patch("time.sleep", side_effect=fake_sleep):
+                self.assertIsNone(d.CTRL.MODE.watch(interval=0.01, count=3, file=buf))
+            # Field values print as in `dump` (`MODE=OPEN_DRAIN`).
+            self.assertEqual(
+                buf.getvalue().splitlines(),
+                [
+                    "CTRL.MODE @ 0x08 = PUSH_PULL",
+                    "CTRL.MODE @ 0x08 = PUSH_PULL -> OPEN_DRAIN",
+                ],
+            )
+
+            # 2. Watch by names and objects on Device (`IRQ_STATUS.CHANGE`, `DEBOUNCE[2].CYCLES`, `SCRATCH.LO`)
+            step = 0
+            d.IRQ_STATUS = 0
+            d.DEBOUNCE[2].CYCLES = 4
+            scratch.LO = 1
+
+            def fake_sleep2(_sec: float) -> None:
+                nonlocal step
+                step += 1
+                if step == 1:
+                    d.IRQ_STATUS = 0x03
+                    d.DEBOUNCE[2].CYCLES = 12
+                    scratch.LO = 7
+
+            buf2 = io.StringIO()
+            with mock.patch("time.sleep", side_effect=fake_sleep2):
+                d.watch(
+                    "IRQ_STATUS.CHANGE",
+                    "DEBOUNCE[2].CYCLES",
+                    scratch.LO,
+                    interval=0.01,
+                    count=2,
+                    file=buf2,
+                )
+            self.assertEqual(
+                buf2.getvalue().splitlines(),
+                [
+                    "IRQ_STATUS.CHANGE~ @ 0x18 = 0",
+                    "DEBOUNCE[2].CYCLES @ 0x2c = 4",
+                    "SCRATCH.LO @ 0x80 = 1",
+                    "IRQ_STATUS.CHANGE~ @ 0x18 = 0 -> 3",
+                    "DEBOUNCE[2].CYCLES @ 0x2c = 4 -> 0xc",
+                    "SCRATCH.LO @ 0x80 = 1 -> 7",
+                ],
+            )
+
+            # 3. `d.watch(only_volatile=True, count=1)` polls only volatile registers (`IN~`, `IRQ_STATUS`)
+            # and skips `EVENT_FIFO` (`rclr`).
+            buf3 = io.StringIO()
+            d.watch(only_volatile=True, count=1, file=buf3)
+            self.assertEqual(
+                buf3.getvalue().splitlines(),
+                [
+                    "IN~ @ 0x14 = 0x0000_0000",
+                    "IRQ_STATUS @ 0x18 = 0x0000_0003  (CHANGE~=3)",
+                ],
+            )
+
+            # 4. Invalid watch arguments raise E_INVALID_ARG
+            # `interval` below 1 ms (a busy loop on the bus) is refused, as by the CLI.
+            for bad_kwargs in (
+                {"interval": 0, "count": 1},
+                {"interval": 0.0005, "count": 1},
+                {"interval": -0.1, "count": 1},
+                {"interval": True, "count": 1},
+                {"interval": float("nan"), "count": 1},
+                {"interval": 0.01, "count": 0},
+                {"interval": 0.01, "count": True},
+            ):
+                with self.assertRaises(MmregError) as ctx:
+                    d.CTRL.watch(**bad_kwargs)  # type: ignore[arg-type]
+                self.assertEqual(ctx.exception.code, "E_INVALID_ARG")
+
+            # A target of another device is refused.
+            with mmreg.open(at=0x5000_0000, size=0x100, force=True, mock=True) as other:
+                other_reg = other.define("R", at=0x0)
+                with self.assertRaises(MmregError):
+                    d.watch(other_reg, count=1, file=io.StringIO())
+
+            # Until Ctrl-C without `count`; nothing is accumulated, so memory stays constant.
+            polls = 0
+
+            def interrupt_after_three(_sec: float) -> None:
+                nonlocal polls
+                polls += 1
+                if polls == 3:
+                    raise KeyboardInterrupt
+
+            with mock.patch("time.sleep", side_effect=interrupt_after_three):
+                self.assertIsNone(d.IN.watch(interval=0.01, file=io.StringIO()))
+            self.assertEqual(polls, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,7 +40,7 @@ __all__ = [
     "find_uio",
 ]
 
-__version__ = "1.3.2"
+__version__ = "1.4.0"
 
 MMREG_O_RDONLY: int = 1 << 0
 MMREG_O_FORCE: int = 1 << 1
@@ -369,6 +369,25 @@ class _HardwareValue:
         return equal if equal is NotImplemented else not equal
 
     __hash__ = None  # type: ignore[assignment]
+
+    def watch(
+        self,
+        *,
+        interval: float = 0.1,
+        count: Optional[int] = None,
+        side_effects: bool = False,
+        file: Any = None,
+    ) -> None:
+        """Polls this register or field every `interval` seconds (at least 1 ms), `count` times or
+        until Ctrl-C, printing its value and then each change (`Device.watch` for several)."""
+        watch_targets(
+            self._device,  # type: ignore[attr-defined]
+            (self,),
+            interval=interval,
+            count=count,
+            side_effects=side_effects,
+            file=file,
+        )
 
     def _location(self) -> Tuple[int, int, int]:
         """The bits this object accesses: `(device, offset, mask)`; whole registers have mask -1."""
@@ -862,6 +881,32 @@ class Device:
         """
         return format_device_dump(self, diff_reset=diff_reset, side_effects=side_effects)
 
+    def watch(
+        self,
+        *targets: Any,
+        interval: float = 0.1,
+        count: Optional[int] = None,
+        only_volatile: bool = False,
+        side_effects: bool = False,
+        file: Any = None,
+    ) -> None:
+        """Polls `targets` (register or field names such as `"IRQ_STATUS.CHANGE"` or
+        `"DEBOUNCE[2].CYCLES"`, or objects) every `interval` seconds (at least 1 ms), `count` times or
+        until Ctrl-C, printing each value and then each change (`old -> new`) to `file` (stdout).
+
+        Without `targets`: every readable register (`only_volatile=True`: those with a field
+        hardware changes); `rclr` / `rset` registers only with `side_effects=True`.
+        """
+        watch_targets(
+            self,
+            targets,
+            interval=interval,
+            count=count,
+            only_volatile=only_volatile,
+            side_effects=side_effects,
+            file=file,
+        )
+
     def define(
         self,
         name: str,
@@ -1006,6 +1051,7 @@ from ._access import (  # noqa: E402
     BlockRegisterGroup,
     BlockRegisterGroupArray,
     format_device_dump,
+    watch_targets,
 )
 from ._resolve import InstanceInfo, InstanceList  # noqa: E402
 from ._resolve import list_instances as list  # noqa: E402, F401  (mmreg.list, not in __all__)

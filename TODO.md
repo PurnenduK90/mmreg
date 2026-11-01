@@ -219,12 +219,12 @@ the Python package; the Rust crate, C library and CLI do not change.
 
 ## 1.4 — CLI and Python tools
 
-- [ ] **Block read (CLI):** `read <addr | uio name + offset> --count N` (hexdump-style, one lock per
+- [x] **Block read (CLI):** `read <addr | uio name + offset> --count N` (hexdump-style, one lock per
   page).
-- [ ] **`watch` (CLI by address / offset, Python by name):** poll and print changes (rate-limited,
+- [x] **`watch` (CLI by address / offset, Python by name):** poll and print changes (rate-limited,
   `--interval`).
-- [ ] **`irq <uio name> [timeout]` (CLI):** wait for a UIO interrupt from the shell.
-- [ ] **Output formats (CLI):** `--format hex|dec|bin|json` (JSON for scripts and agents).
+- [x] **`irq <uio name> [timeout]` (CLI):** wait for a UIO interrupt from the shell.
+- [x] **Output formats (CLI):** `--format hex|dec|bin|json` (JSON for scripts and agents).
 
 ## Later
 

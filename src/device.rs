@@ -454,6 +454,44 @@ impl Device {
     /// open lock file each while the guard lives.
     pub const MAX_SEQUENCE_PAGES: u64 = 64;
 
+    /// Reads `out.len()` consecutive `width`-bit words starting at byte `offset` (a block read,
+    /// as `mmreg read --count N`), taking one lock per page: the page's lock (or the UIO device
+    /// lock) is held across all words in that page and released before the next page, so a long
+    /// read never holds more than one lock or blocks other programs for longer than one page.
+    ///
+    /// The whole range is checked before anything is read (alignment, window bounds).
+    pub fn read_block(&self, offset: u32, width: Width, out: &mut [u64]) -> Result<(), MmregError> {
+        if out.is_empty() {
+            return Ok(());
+        }
+        let step = width.bytes();
+        self.check_access(offset, width, false)?;
+        // The last word's offset must fit the `u32` offsets of the mapper, and the end the window.
+        let last = out
+            .len()
+            .checked_mul(step)
+            .and_then(|total| (offset as usize).checked_add(total - step));
+        match last {
+            Some(last) if u32::try_from(last).is_ok() && last + step <= self.size => {}
+            _ => return Err(self.err_out_of_bounds(offset, out.len().saturating_mul(step))),
+        }
+        let page = page_size();
+        let mut done = 0;
+        while done < out.len() {
+            let word_off = offset as usize + done * step;
+            let address = self.base_address + word_off as u64;
+            // Words left in this page; `address` is aligned to `step`, which divides the page size.
+            let in_page = ((page - (address & (page - 1))) / step as u64) as usize;
+            let words = in_page.min(out.len() - done);
+            let _guard = self.lock_at(address)?;
+            for (k, slot) in out[done..done + words].iter_mut().enumerate() {
+                *slot = self.backend.read((word_off + k * step) as u32, width);
+            }
+            done += words;
+        }
+        Ok(())
+    }
+
     /// Takes the lock for one access at physical `address`: the UIO device's lock, or the lock
     /// file of the exact physical page holding the register (the documented protocol, shared with
     /// the CLI and other programs).
@@ -783,6 +821,59 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(dev.read_u32(0).unwrap(), 120);
+    }
+
+    #[test]
+    fn test_read_block_reads_across_pages_and_checks_the_whole_range() {
+        let page = page_size();
+        let dev = Device::addr(0x7C00_0000, 2 * page as usize)
+            .with_force(true)
+            .with_custom_mapper(ByteMockMapper::boxed(2 * page as usize))
+            .open()
+            .unwrap();
+        let start = page as u32 - 8;
+        for i in 0..6u32 {
+            dev.write_u32(start + 4 * i, 0x1000_0000 + i).unwrap();
+        }
+        // Two words in the first page, four in the second.
+        let mut words = [0u64; 6];
+        dev.read_block(start, Width::U32, &mut words).unwrap();
+        assert_eq!(
+            words,
+            [
+                0x1000_0000,
+                0x1000_0001,
+                0x1000_0002,
+                0x1000_0003,
+                0x1000_0004,
+                0x1000_0005
+            ]
+        );
+        let mut bytes = [0u64; 3];
+        dev.read_block(start, Width::U8, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x00, 0x00, 0x00]);
+        dev.read_block(0, Width::U32, &mut []).unwrap();
+
+        // Past the window, unaligned, or a count whose byte size overflows: refused before reading.
+        let end = 2 * page as u32;
+        assert_eq!(
+            dev.read_block(end - 4, Width::U32, &mut [0; 2])
+                .unwrap_err()
+                .code(),
+            "E_OUT_OF_BOUNDS"
+        );
+        assert_eq!(
+            dev.read_block(2, Width::U32, &mut [0; 1])
+                .unwrap_err()
+                .code(),
+            "E_UNALIGNED_ACCESS"
+        );
+        assert_eq!(
+            dev.read_block(end, Width::U32, &mut [0; 1])
+                .unwrap_err()
+                .code(),
+            "E_OUT_OF_BOUNDS"
+        );
     }
 
     #[test]

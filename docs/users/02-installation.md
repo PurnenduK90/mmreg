@@ -51,7 +51,7 @@ Add `mmreg` to your project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-mmreg = "1.3"
+mmreg = "1.4"
 ```
 
 Or using `cargo add`:
@@ -74,10 +74,10 @@ in a checkout of this repository; a target CPU other than the host's needs
 [`cross`](https://github.com/cross-rs/cross):
 
 ```sh
-just python-wheel                                   # this machine: target/wheels/mmreg-1.3.2-py3-none-linux_x86_64.whl
+just python-wheel                                   # this machine: target/wheels/mmreg-1.4.0-py3-none-linux_x86_64.whl
 just python-wheel aarch64-unknown-linux-gnu         # Zynq UltraScale+, i.MX8, Raspberry Pi 4/5
 just python-wheel armv7-unknown-linux-gnueabihf     # Zynq-7000, Cyclone V SoC, i.MX6, STM32MP1
-pip install mmreg-1.3.2-py3-none-linux_aarch64.whl  # on the target
+pip install mmreg-1.4.0-py3-none-linux_aarch64.whl  # on the target
 ```
 
 The wheel carries a release `libmmreg.so` (UIO only, no `/dev/mem`) and a CPU tag, so `pip`
@@ -130,9 +130,9 @@ You can include `mmreg` in a Yocto / OpenEmbedded (or Xilinx PetaLinux) or Build
 | `mmreg` CLI (bring-up) | `--features debug` | Development / bring-up images (`devmem` replacement) |
 | Python `mmreg` (`bindings/python/mmreg`) | pure-Python (`ctypes` over `libmmreg.so`) | Development images or Python-enabled application images |
 
-### Option A: Building CLI, C Library, and Python Module from Source (`mmreg_1.3.2.bb`)
+### Option A: Building CLI, C Library, and Python Module from Source (`mmreg_1.4.0.bb`)
 
-Create `meta-custom/recipes-devtools/mmreg/mmreg_1.3.2.bb`:
+Create `meta-custom/recipes-devtools/mmreg/mmreg_1.4.0.bb`:
 
 ```bitbake
 SUMMARY = "Safe, concurrent 8/16/32/64-bit memory-mapped IO register access (Rust, C, Python, and CLI)"
@@ -141,8 +141,8 @@ LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://LICENSE.txt;md5=3914388ed65427d749c0c5886d2d12cf"
 
 SRC_URI = "git://github.com/PurnenduK90/mmreg.git;protocol=https;branch=main"
-# Pin the commit of the v1.3.2 tag: `${AUTOREV}` would drift away from the pinned `mmreg-crates.inc`.
-SRCREV = "<commit-sha-of-v1.3.2>"
+# Pin the commit of the v1.4.0 tag: `${AUTOREV}` would drift away from the pinned `mmreg-crates.inc`.
+SRCREV = "<commit-sha-of-v1.4.0>"
 S = "${WORKDIR}/git"
 
 inherit cargo cargo-update-recipe-crates python3-dir
@@ -194,7 +194,7 @@ RDEPENDS:${PN}-python = "${PN} python3-core python3-ctypes python3-json"
 > ```sh
 > bitbake -c update_recipe_crates mmreg
 > ```
-> In **Buildroot**, use `$(eval $(cargo-package))` with `MMREG_CARGO_BUILD_OPTS = --workspace` and install `libmmreg.a`, `bindings/c/include/mmreg.h`, and `bindings/c/mmreg.pc` into `$(STAGING_DIR)/usr`, and `libmmreg.so` as `libmmreg.so.1.3.2` with `libmmreg.so.1` and `libmmreg.so` symlinks into both `$(STAGING_DIR)/usr/lib` and `$(TARGET_DIR)/usr/lib` (the library's SONAME is `libmmreg.so.1`).
+> In **Buildroot**, use `$(eval $(cargo-package))` with `MMREG_CARGO_BUILD_OPTS = --workspace` and install `libmmreg.a`, `bindings/c/include/mmreg.h`, and `bindings/c/mmreg.pc` into `$(STAGING_DIR)/usr`, and `libmmreg.so` as `libmmreg.so.1.4.0` with `libmmreg.so.1` and `libmmreg.so` symlinks into both `$(STAGING_DIR)/usr/lib` and `$(TARGET_DIR)/usr/lib` (the library's SONAME is `libmmreg.so.1`).
 
 ### Option B: Pre-Built Binary Recipe (For Older Yocto / PetaLinux Toolchains)
 

@@ -95,12 +95,19 @@ also an `AttributeError`, so `hasattr(d, "CTRL")` and `getattr(d, "CTRL", None)`
 | :--- | :--- |
 | `E_CLI_INVALID_ADDR` / `E_CLI_INVALID_OFFSET` / `E_CLI_INVALID_VAL` | The address (64-bit), byte offset (32-bit), or value (`8`/`16`/`32`/`64`-bit) is not a valid number for its width. |
 | `E_CLI_MISSING_WIDTH` / `E_CLI_INVALID_WIDTH` | `-w` / `--width` was given without a value or with a value other than `8`, `16`, `32`, or `64`. |
-| `E_CLI_MISSING_CMD` | No command (`read` or `write`) given. |
-| `E_CLI_MISSING_ADDR` | `read` or `write` without an address or UIO name. |
+| `E_CLI_MISSING_COUNT` / `E_CLI_INVALID_COUNT` | `-c` / `--count` was given without a value, with a value less than `1`, or not a decimal number (`0x` for hex). |
+| `E_CLI_MISSING_INTERVAL` / `E_CLI_INVALID_INTERVAL` | `-i` / `--interval` was given without a value, with a value less than `1` ms, or not a decimal number (`0x` for hex). |
+| `E_CLI_MISSING_FORMAT` / `E_CLI_INVALID_FORMAT` | `-F` / `--format` was given without a value or with a value other than `hex`, `dec`, `bin`, or `json`. |
+| `E_CLI_MISSING_CMD` | No command (`read`, `write`, `watch`, or `irq`) given. |
+| `E_CLI_MISSING_ADDR` | `read`, `write`, or `watch` without an address or UIO name. |
+| `E_CLI_MISSING_UIO` | `irq` without a UIO device name. |
+| `E_CLI_INVALID_TIMEOUT` | `irq <uio-name> <timeout_ms>` with a `timeout_ms` that is not a valid 64-bit unsigned integer. |
+| `E_CLI_IRQ_TIMEOUT` | `irq <uio-name> <timeout_ms>` timed out before an interrupt arrived (exit status `2`, not `1`). |
 | `E_CLI_MISSING_VAL` | `write` without a value. |
 | `E_CLI_MISSING_PROFILE` | `--validate` without a file. |
 | `E_CLI_UNKNOWN_OPT` | Unrecognized `-` / `--` option. |
-| `E_CLI_UNKNOWN_CMD` | Command other than `read` / `write`. |
+| `E_CLI_OPT_CONFLICT` | An option the command does not use: `--interval` or `--unmask` with `read`, `--unmask` with `watch`, `--count` / `--interval` / `--unmask` with `write`, `--count` / `--interval` with `irq`. |
+| `E_CLI_UNKNOWN_CMD` | Command other than `read`, `write`, `watch`, or `irq`. |
 | `E_CLI_EXTRA_ARGS` | More operands than the command takes. |
 | `E_CLI_NO_PROFILE` | `--validate` on a build without the `profile` feature. |
 

@@ -108,6 +108,11 @@ fn transfer_word(dev: &Device, payload: u32) -> Result<u32, MmregError> {
 }
 ```
 
+To read a **range of consecutive words** (a register dump, `mmreg read --count N`) without holding
+every page's lock at once, use `dev.read_block(offset, width, &mut buf)?`: it checks the whole range
+first, then holds one lock per page (of the kernel's page size) across the words in that page, so
+other programs wait for at most one page and the range may be any size.
+
 ---
 
 ## 3. UIO Interrupts (`irq_wait` and `irq_unmask`)
@@ -485,6 +490,7 @@ with mmreg.open("gpio0") as d:           # UIO name -> of_node/compatible -> <co
     d.DEBOUNCE[3].CYCLES = 10            # register arrays and groups
     fifo = d.EVENT_FIFO.read(side_effects=True)  # read-to-clear needs side_effects=True
     print(d.dump(diff_reset=True))       # registers that differ from reset; rclr ones are skipped
+    d.watch("IRQ_STATUS.CHANGE", interval=0.1, count=10)  # poll and print transitions
 ```
 
 Field writes follow the access type of every field of the register (`sw`, `onwrite`, `onread`,

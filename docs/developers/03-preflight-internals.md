@@ -21,6 +21,23 @@ Returns a `Target`: the backend (`MapperType::Uio` for a covering or explicit UI
 
 Without `check`, only the lookups run (the owner is still needed for the runtime PM guard).
 
+## 1a. Runtime PM: Before and After Opening
+
+`power/runtime_status` only means something while the device is held: generic-uio keeps an idle
+device `suspended` and resumes it synchronously (`pm_runtime_get_sync`) when `/dev/uioN` is opened;
+writing `on` to `power/control` (the `/dev/mem` `RuntimePmGuard`) resumes it too. So
+`bad_runtime_pm(path, held)` has two rules:
+
+* `held = false` (pre-flight in `resolve`): only `error` is bad;
+* `held = true` (`check_runtime_pm_held`, called by `DeviceBuilder::open` after `map()`, the lock
+  and the guard, unless `force`): anything but `active` or `unsupported` is bad. Suppliers get the
+  strict rule only when their device link's `runtime_pm` is `1`.
+
+A missing file passes in both. Clocks are checked only after opening (`check_clocks_held`), for
+the same reason: a clock managed by runtime PM is gated while the device is suspended. On failure
+`open` unmaps before returning the error. Custom mappers hold nothing, so for them only the clocks
+are checked after `map()`.
+
 ## 2. Testable Roots
 
 Filesystem roots are parameters of the scanning functions so tests run on any OS with temporary
@@ -46,7 +63,7 @@ then does `check_fpga_manager_operating` run.
 
 ## 5. Clocks (`clk_summary`)
 
-`check_device_clocks` collects the device's clock names from `of_node/clock-names` and streams
+`check_device_clocks` (after opening, through `check_clocks_held`) collects the device's clock names from `of_node/clock-names` and streams
 `/sys/kernel/debug/clk/clk_summary` with one reused line buffer. A row (clock name, enable count,
 prepare count, ...) is relevant when it is one of those clocks or lists the device as consumer;
 consumer-only lines (newer kernels) apply to the clock row above. A relevant clock with hardware

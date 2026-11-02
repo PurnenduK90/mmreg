@@ -18,8 +18,8 @@ names the resource or sysfs path involved, and ends with a `Remediation:` hint.
 | Code | Meaning | Remediation |
 | :--- | :--- | :--- |
 | `E_ZOMBIE_DT_STATUS` | `of_node/status` is not `okay` (e.g. `disabled`). | Enable the node (`status = "okay";`) or apply an overlay. |
-| `E_ZOMBIE_RUNTIME_PM` | `power/runtime_status` is `suspended`, `suspending` or `error`. | `echo on \| sudo tee /sys/bus/platform/devices/<dev>/power/control`, or let its driver keep it active. |
-| `E_ZOMBIE_SUPPLIER_PM` | A `supplier:*` (clock, reset, regulator, power domain) is suspended or in error. | Bring the supplier named in the message up first. |
+| `E_ZOMBIE_RUNTIME_PM` | `power/runtime_status` is `error`, or the device is still not `active` after mmreg opened it (the kernel could not resume it). | Check `dmesg` for resume errors; `echo on \| sudo tee /sys/bus/platform/devices/<dev>/power/control`, or let its driver keep it active. |
+| `E_ZOMBIE_SUPPLIER_PM` | A `supplier:*` (clock, reset, regulator, power domain) is in error, or still suspended after opening through a runtime-PM managed link. | Check `dmesg` for resume errors; bring the supplier named in the message up first. |
 | `E_ZOMBIE_CLOCK_GATED` | A clock of the device is off in hardware (`clk_summary` hardware enable `N`). | Enable the clock through its driver or Device Tree. |
 | `E_ZOMBIE_FPGA_STATE` | The device is on an FPGA fabric and an FPGA manager is not `operating`. | Load the bitstream (e.g. `sudo fpgautil -b design.bit.bin`) and check `/sys/class/fpga_manager/fpga0/state`. |
 

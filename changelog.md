@@ -184,3 +184,11 @@
         * `docs/users/07-block-files.md`: `"reset": "x"` means no reset value (unknown after reset), left out of `dump(diff_reset=True)`; the `mmreg-block/1.0` loader always accepted it, and register generators (Bitforge) write it
     * Repository
         * `.gitattributes` (`* text=auto eol=lf`): the 1.3.1 / 1.3.2 commits stored 13 files (Python modules and tests, docs, `TODO.md`, `ci.yml`, `justfile`) with CRLF line endings written by Windows tools; a CRLF `justfile` breaks its `#!/usr/bin/env bash` recipes (`python-wheel`, `python-wheel-test`) on Linux. All are LF again
+* **[1.4.1]** Runtime PM Checked After Opening (UIO Devices No Longer Refused as Suspended)
+    * Hardware Pre-Flight (`src/memcheck.rs`, `src/device.rs`)
+        * Runtime PM is checked in two steps: before opening only `error` is refused (an idle generic-uio device is `suspended` until `/dev/uioN` is opened, which made every UIO device fail with `[E_ZOMBIE_RUNTIME_PM]`), and after opening, once the kernel has resumed it, anything but `active` / `unsupported` is refused before the first access (`check_runtime_pm_held`); `--force` skips both, as before
+        * Suppliers follow the same two steps; after opening, the strict rule applies only to runtime-PM managed device links (`runtime_pm` = 1)
+        * A missing `runtime_status` (kernel without runtime PM) passes
+        * Clocks (`clk_summary`) are checked after opening too (`check_clocks_held`): a clock managed by runtime PM is gated while the device is suspended, which would refuse an idle device with `[E_ZOMBIE_CLOCK_GATED]`
+    * `[E_ZOMBIE_RUNTIME_PM]` says the kernel could not resume the device; it and `[E_ZOMBIE_SUPPLIER_PM]` suggest `dmesg`
+    * Documentation: `docs/users/05-safety-and-preflight.md`, `06-troubleshooting.md`, `docs/developers/01-architecture.md`, `03-preflight-internals.md` §1a

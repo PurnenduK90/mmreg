@@ -21,7 +21,9 @@ pub(crate) struct Target {
 }
 
 /// Finds the UIO region or platform device owning `[target, target + size)`. With `check`, also
-/// refuses RAM and unknown ranges (Blueprint) and runs the Hardware Pre-Flight on the owner.
+/// refuses RAM and unknown ranges (Blueprint) and runs the Hardware Pre-Flight on the owner. The
+/// pre-flight accepts a runtime-suspended device: [`check_runtime_pm_held`] and
+/// [`check_clocks_held`] verify it was resumed and clocked once opened.
 pub(crate) fn resolve(
     target: u64,
     size: usize,
@@ -30,7 +32,7 @@ pub(crate) fn resolve(
 ) -> Result<Target, MmregError> {
     let fpga_mgr_root = Path::new("/sys/class/fpga_manager");
     let sysfs_uio = Path::new("/sys/class/uio");
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
 
     if let MapperType::Uio { device_path, .. } = mapper_type {
         let owner = Path::new(device_path)
@@ -39,7 +41,7 @@ pub(crate) fn resolve(
             .filter(|p| p.exists())
             .map(|uio_dir| uio_owner(&uio_dir));
         if let (true, Some((name, path))) = (check, &owner) {
-            preflight_check_device(name, path, fpga_mgr_root, &mut warnings)?;
+            preflight_check_device(name, path, fpga_mgr_root)?;
         }
         return Ok(Target {
             mapper: mapper_type.clone(),
@@ -51,12 +53,7 @@ pub(crate) fn resolve(
     if *mapper_type == MapperType::Auto {
         if let Some(uio) = find_uio_region(sysfs_uio, Path::new("/dev"), target, size) {
             if check {
-                preflight_check_device(
-                    &uio.device_name,
-                    &uio.device_path,
-                    fpga_mgr_root,
-                    &mut warnings,
-                )?;
+                preflight_check_device(&uio.device_name, &uio.device_path, fpga_mgr_root)?;
             }
             return Ok(Target {
                 mapper: MapperType::Uio {
@@ -74,7 +71,7 @@ pub(crate) fn resolve(
         let in_iomem = check_iomem(target, size)?;
         match &owner {
             Some((name, path)) => {
-                preflight_check_device(name, path, fpga_mgr_root, &mut warnings)?;
+                preflight_check_device(name, path, fpga_mgr_root)?;
             }
             None if !in_iomem => {
                 return Err(MmregError::BlueprintUnmapped {
@@ -498,22 +495,103 @@ fn is_fpga_backed_device(dev_path: &Path) -> bool {
         })
 }
 
-/// The runtime PM status at `pm_path` when it is `suspended`, `suspending` or `error`.
-fn bad_runtime_pm(pm_path: &Path) -> Option<String> {
+/// The runtime PM status at `pm_path` when it is bad, else `None` (also when the file is
+/// missing: a kernel without runtime PM keeps every device powered).
+///
+/// Before the device is opened (`held == false`), only `error` (the kernel failed to resume it)
+/// is bad: `suspended` is the normal state of an idle device, which the kernel resumes when it
+/// is opened (`/dev/uioN`) or held on (`power/control = on`). Once mmreg holds it
+/// (`held == true`), anything but `active` or `unsupported` (runtime PM disabled, always
+/// powered) means the device could not be resumed.
+fn bad_runtime_pm(pm_path: &Path, held: bool) -> Option<String> {
     let raw = fs::read_to_string(pm_path).ok()?;
     let status = raw.trim();
-    ["suspended", "suspending", "error"]
-        .iter()
-        .any(|bad| status.eq_ignore_ascii_case(bad))
-        .then(|| status.to_string())
+    let ok = if held {
+        ["active", "unsupported"]
+            .iter()
+            .any(|good| status.eq_ignore_ascii_case(good))
+    } else {
+        !status.eq_ignore_ascii_case("error")
+    };
+    (!ok).then(|| status.to_string())
 }
 
-/// Runs the Zombie Hardware Pre-Flight checks on a sysfs device.
+/// Runtime PM of the device and of its suppliers (device links to clock, reset, regulator and
+/// power-domain providers). With `held`, a supplier is held to the strict rule only when its
+/// link is runtime-PM managed (`runtime_pm` = 1): only then does resuming the device resume it.
+fn check_runtime_pm(dev_name: &str, dev_path: &Path, held: bool) -> Result<(), MmregError> {
+    let pm_path = dev_path.join("power/runtime_status");
+    if let Some(status) = bad_runtime_pm(&pm_path, held) {
+        return Err(MmregError::ZombieRuntimePm {
+            device_name: dev_name.to_string(),
+            status,
+            pm_path,
+            device_path: dev_path.to_path_buf(),
+        });
+    }
+
+    let Ok(entries) = fs::read_dir(dev_path) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|n| is_supplier_link(n)) else {
+            continue;
+        };
+        let link = entry.path();
+        let managed = fs::read_to_string(link.join("runtime_pm")).is_ok_and(|v| v.trim() == "1");
+        let supplier = link.join("supplier");
+        let root = if supplier.exists() { supplier } else { link };
+        let pm_path = root.join("power/runtime_status");
+        if let Some(status) = bad_runtime_pm(&pm_path, held && managed) {
+            return Err(MmregError::ZombieSupplierPm {
+                device_name: dev_name.to_string(),
+                supplier_name: name.to_string(),
+                status,
+                supplier_pm_path: pm_path,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// After the device is opened (`/dev/uioN` open, or the `/dev/mem` [`RuntimePmGuard`] taken), it
+/// must be runtime-active: the kernel resumes it synchronously on open, so a device still
+/// `suspended` (or in `error`) here cannot be resumed and must not be accessed. `owner` is the
+/// sysfs device from [`resolve`]; not called with `--force`.
+pub(crate) fn check_runtime_pm_held(owner: &Path) -> Result<(), MmregError> {
+    check_runtime_pm(&device_name(owner), owner, true)
+}
+
+/// The device's clocks, checked once it is opened: a clock managed by runtime PM is gated while
+/// the device is suspended and enabled when it is resumed. `owner` is the sysfs device from
+/// [`resolve`]; not called with `--force`.
+pub(crate) fn check_clocks_held(
+    owner: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<(), MmregError> {
+    check_device_clocks(
+        &device_name(owner),
+        owner,
+        Path::new("/sys/kernel/debug/clk"),
+        warnings,
+    )
+}
+
+/// The device's name (its sysfs directory name), as `clk_summary` lists it.
+fn device_name(owner: &Path) -> String {
+    owner
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Runs the Zombie Hardware Pre-Flight checks on a sysfs device, before it is opened. Clocks are
+/// checked after opening ([`check_clocks_held`]).
 fn preflight_check_device(
     dev_name: &str,
     dev_path: &Path,
     fpga_mgr_root: &Path,
-    warnings: &mut Vec<String>,
 ) -> Result<(), MmregError> {
     // 1. Device Tree status
     let status_path = dev_path.join("of_node/status");
@@ -531,48 +609,11 @@ fn preflight_check_device(
         }
     }
 
-    // 2. Runtime power management
-    let pm_path = dev_path.join("power/runtime_status");
-    if let Some(status) = bad_runtime_pm(&pm_path) {
-        return Err(MmregError::ZombieRuntimePm {
-            device_name: dev_name.to_string(),
-            status,
-            pm_path,
-            device_path: dev_path.to_path_buf(),
-        });
-    }
+    // 2.-3. Runtime power management of the device and its suppliers: only `error` here, since
+    // an idle device is normally suspended until opened (`check_runtime_pm_held` after opening).
+    check_runtime_pm(dev_name, dev_path, false)?;
 
-    // 3. Supplier device links (clocks, resets, regulators, power domains)
-    if let Ok(entries) = fs::read_dir(dev_path) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str().filter(|n| is_supplier_link(n)) else {
-                continue;
-            };
-            let link = entry.path();
-            let supplier = link.join("supplier");
-            let root = if supplier.exists() { supplier } else { link };
-            let pm_path = root.join("power/runtime_status");
-            if let Some(status) = bad_runtime_pm(&pm_path) {
-                return Err(MmregError::ZombieSupplierPm {
-                    device_name: dev_name.to_string(),
-                    supplier_name: name.to_string(),
-                    status,
-                    supplier_pm_path: pm_path,
-                });
-            }
-        }
-    }
-
-    // 4. Common Clock Framework (debugfs)
-    check_device_clocks(
-        dev_name,
-        dev_path,
-        Path::new("/sys/kernel/debug/clk"),
-        warnings,
-    )?;
-
-    // 5. FPGA manager, only for devices on the FPGA fabric
+    // 4. FPGA manager, only for devices on the FPGA fabric
     if is_fpga_backed_device(dev_path) {
         check_fpga_manager_operating(dev_name, fpga_mgr_root)?;
     }
@@ -844,27 +885,21 @@ e0000000-e0000fff : xuartps
         fs::create_dir_all(fpga_root.join("fpga0")).unwrap();
         fs::write(fpga_root.join("fpga0/state"), "power off\n").unwrap();
 
-        let mut warnings = Vec::new();
         assert!(!is_fpga_backed_device(&ps_dev));
-        assert!(
-            preflight_check_device("e0000000.serial", &ps_dev, &fpga_root, &mut warnings).is_ok()
-        );
+        assert!(preflight_check_device("e0000000.serial", &ps_dev, &fpga_root).is_ok());
 
         let pl_dev = root.join("amba_pl@0").join("a0000000.axi_gpio");
         fs::create_dir_all(pl_dev.join("of_node")).unwrap();
         fs::write(pl_dev.join("of_node/status"), "okay\0").unwrap();
 
         assert!(is_fpga_backed_device(&pl_dev));
-        let err = preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root, &mut warnings)
-            .unwrap_err();
+        let err = preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root).unwrap_err();
         assert!(err
             .to_string()
             .contains("FPGA manager 'fpga0' is in state 'power off'"));
 
         fs::write(fpga_root.join("fpga0/state"), "operating\n").unwrap();
-        assert!(
-            preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root, &mut warnings).is_ok()
-        );
+        assert!(preflight_check_device("a0000000.axi_gpio", &pl_dev, &fpga_root).is_ok());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -879,21 +914,34 @@ e0000000-e0000fff : xuartps
         let mut warnings = Vec::new();
 
         fs::write(dev.join("of_node/status"), "disabled\0").unwrap();
-        let err =
-            preflight_check_device("ff000000.i2c", &dev, &fpga_root, &mut warnings).unwrap_err();
+        let err = preflight_check_device("ff000000.i2c", &dev, &fpga_root).unwrap_err();
         assert!(err.to_string().contains("Device Tree status 'disabled'"));
 
         fs::write(dev.join("of_node/status"), "okay\0").unwrap();
-        for status in ["suspended", "suspending"] {
+        // Before opening, an idle device is normally suspended: only `error` is refused.
+        for status in ["suspended", "suspending", "active", "unsupported"] {
             fs::write(dev.join("power/runtime_status"), format!("{status}\n")).unwrap();
-            let err = preflight_check_device("ff000000.i2c", &dev, &fpga_root, &mut warnings)
-                .unwrap_err();
-            assert_eq!(err.code(), "E_ZOMBIE_RUNTIME_PM");
-            assert!(err.to_string().contains(status));
+            assert!(preflight_check_device("ff000000.i2c", &dev, &fpga_root).is_ok());
         }
+        fs::write(dev.join("power/runtime_status"), "error\n").unwrap();
+        let err = preflight_check_device("ff000000.i2c", &dev, &fpga_root).unwrap_err();
+        assert_eq!(err.code(), "E_ZOMBIE_RUNTIME_PM");
+        assert!(err.to_string().contains("'error'"));
 
-        fs::write(dev.join("power/runtime_status"), "active\n").unwrap();
-        assert!(preflight_check_device("ff000000.i2c", &dev, &fpga_root, &mut warnings).is_ok());
+        // Once opened, the device must have been resumed.
+        for status in ["suspended", "suspending", "resuming", "error"] {
+            fs::write(dev.join("power/runtime_status"), format!("{status}\n")).unwrap();
+            let err = check_runtime_pm_held(&dev).unwrap_err();
+            assert_eq!(err.code(), "E_ZOMBIE_RUNTIME_PM");
+            assert!(err.to_string().contains("ff000000.i2c"));
+        }
+        for status in ["active", "unsupported"] {
+            fs::write(dev.join("power/runtime_status"), format!("{status}\n")).unwrap();
+            assert!(check_runtime_pm_held(&dev).is_ok());
+        }
+        // No runtime PM in the kernel: no file, always powered.
+        fs::remove_file(dev.join("power/runtime_status")).unwrap();
+        assert!(check_runtime_pm_held(&dev).is_ok());
 
         fs::write(dev.join("power/control"), "auto\n").unwrap();
         {
@@ -999,16 +1047,27 @@ e0000000-e0000fff : xuartps
         assert_eq!(found.0, "a0000000.custom_ip");
         assert!(find_owning_device(&devices_dir, 0xB000_0000, 4).is_none());
 
-        let sup_dir = dev_path.join("supplier_platform_clk_ctrl").join("power");
+        let link = dev_path.join("supplier_platform_clk_ctrl");
+        let sup_dir = link.join("power");
         fs::create_dir_all(&sup_dir).unwrap();
-        fs::write(sup_dir.join("runtime_status"), "suspending\n").unwrap();
         let fpga_root = root.join("fpga_mgr");
-        let mut warnings = Vec::new();
-        let err =
-            preflight_check_device("a0000000.custom_ip", &dev_path, &fpga_root, &mut warnings)
-                .unwrap_err();
+        // Before opening: a suspended supplier is fine, one in `error` is not.
+        fs::write(sup_dir.join("runtime_status"), "suspending\n").unwrap();
+        assert!(preflight_check_device("a0000000.custom_ip", &dev_path, &fpga_root).is_ok());
+        fs::write(sup_dir.join("runtime_status"), "error\n").unwrap();
+        let err = preflight_check_device("a0000000.custom_ip", &dev_path, &fpga_root).unwrap_err();
         assert_eq!(err.code(), "E_ZOMBIE_SUPPLIER_PM");
         assert!(err.to_string().contains("supplier_platform_clk_ctrl"));
+
+        // Once opened: a suspended supplier is refused only through a runtime-PM managed link,
+        // the only kind resuming the device resumes.
+        fs::write(sup_dir.join("runtime_status"), "suspended\n").unwrap();
+        assert!(check_runtime_pm_held(&dev_path).is_ok());
+        fs::write(link.join("runtime_pm"), "1\n").unwrap();
+        let err = check_runtime_pm_held(&dev_path).unwrap_err();
+        assert_eq!(err.code(), "E_ZOMBIE_SUPPLIER_PM");
+        fs::write(link.join("runtime_pm"), "0\n").unwrap();
+        assert!(check_runtime_pm_held(&dev_path).is_ok());
 
         fs::write(sup_dir.join("runtime_status"), "active\n").unwrap();
         fs::create_dir_all(dev_path.join("supplier_platform_fpga_region0")).unwrap();

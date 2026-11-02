@@ -46,13 +46,21 @@ Knowing the address does not mean the block behind it is awake. For the owning d
 
 1. **Device Tree status** (`of_node/status`): must be `"okay"` / `"ok"` when present
    (`[E_ZOMBIE_DT_STATUS]`).
-2. **Runtime PM** (`power/runtime_status`): must not be `suspended`, `suspending` or `error`
-   (`[E_ZOMBIE_RUNTIME_PM]`).
+2. **Runtime PM** (`power/runtime_status`), in two steps (`[E_ZOMBIE_RUNTIME_PM]`):
+   * before mapping, only `error` is refused: an idle device is normally `suspended` (generic-uio
+     keeps it so until `/dev/uioN` is opened), and the kernel resumes it when it is opened;
+   * after mapping, with `/dev/uioN` open or the `/dev/mem` guard holding `power/control` at `on`,
+     the kernel has resumed it synchronously, so anything but `active` or `unsupported` (runtime PM
+     disabled) is refused before the first access.
+
+   A missing `runtime_status` (kernel without runtime PM) passes. `--force` skips both steps.
 3. **Suppliers** (`supplier:*` device links to clock, reset, regulator and power-domain providers):
-   same rule (`[E_ZOMBIE_SUPPLIER_PM]`).
-4. **Clocks** (`/sys/kernel/debug/clk/clk_summary`, needs debugfs and root): a clock of the device
-   (named in `of_node/clock-names` or listing the device as consumer) whose *hardware enable*
-   column is `N` is refused (`[E_ZOMBIE_CLOCK_GATED]`). When the kernel has no hardware-enable
+   same two steps (`[E_ZOMBIE_SUPPLIER_PM]`); after mapping, the strict rule applies only to links
+   whose `runtime_pm` is `1`, the only links that resuming the device resumes.
+4. **Clocks** (`/sys/kernel/debug/clk/clk_summary`, needs debugfs and root), checked after
+   mapping, since a clock managed by runtime PM is off while the device is suspended: a clock of
+   the device (named in `of_node/clock-names` or listing the device as consumer) whose *hardware
+   enable* column is `N` is refused (`[E_ZOMBIE_CLOCK_GATED]`). When the kernel has no hardware-enable
    column, an enable count of 0 only prints a warning: clocks of UIO devices and clocks kept by
    `clk_ignore_unused` run with a count of 0.
 5. **FPGA manager**, only for devices on an FPGA fabric (path through `amba_pl`, `axi_pl`,
@@ -62,7 +70,8 @@ Knowing the address does not mean the block behind it is awake. For the owning d
 
 **While mapped**: a UIO device stays runtime-active while `/dev/uioN` is open. For `/dev/mem`,
 `mmreg` sets the owning device's `power/control` to `on` and restores the previous value on unmap
-(root only; otherwise a warning is printed).
+(root only; otherwise a warning is printed, and a still-suspended device then fails the check
+after mapping).
 
 ---
 

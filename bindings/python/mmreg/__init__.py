@@ -40,7 +40,7 @@ __all__ = [
     "find_uio",
 ]
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 MMREG_O_RDONLY: int = 1 << 0
 MMREG_O_FORCE: int = 1 << 1

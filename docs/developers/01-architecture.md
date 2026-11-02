@@ -67,6 +67,7 @@ sequenceDiagram
     Check-->>Dev: Target { Uio | DevMem, owner, warnings }
     Dev->>Mapper: map(base, size, read_only)
     Dev->>Lock: DeviceLock::open(/dev/uioN) (shared by (st_dev, st_ino))
+    Dev->>Check: check_runtime_pm_held(owner), check_clocks_held(owner) (unless force)
     Dev-->>Caller: Ok(Device)
 
     Caller->>Dev: dev.update_u32(offset, mask, val)

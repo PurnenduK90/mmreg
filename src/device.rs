@@ -3,7 +3,9 @@
 
 use crate::error::MmregError;
 use crate::lock::{lock, lock_all, DeviceLock, LockGuard};
-use crate::memcheck::{find_uio, read_uio_region, resolve, RuntimePmGuard};
+use crate::memcheck::{
+    check_clocks_held, check_runtime_pm_held, find_uio, read_uio_region, resolve, RuntimePmGuard,
+};
 use crate::memregs::{MapperType, MemoryMapper, OsMapper, Width};
 use crate::mmio::{irq_unmask, irq_wait, page_size};
 use crate::validation::SafetyProfile;
@@ -262,6 +264,25 @@ impl DeviceBuilder {
             }
             None => None,
         };
+
+        // The device is now held (open `/dev/uioN`, or the `/dev/mem` PM guard), so the kernel
+        // has resumed it: it must be runtime-active, and its clocks running, before the first
+        // access. A custom mapper holds nothing, so only its clocks are checked. `--force` skips
+        // this like every other check.
+        if !self.force_map {
+            if let Some(owner) = &target.owner {
+                let held = if has_custom {
+                    Ok(())
+                } else {
+                    check_runtime_pm_held(owner)
+                };
+                if let Err(err) = held.and_then(|()| check_clocks_held(owner, &mut target.warnings))
+                {
+                    backend.unmap();
+                    return Err(err);
+                }
+            }
+        }
 
         Ok(Device {
             name,

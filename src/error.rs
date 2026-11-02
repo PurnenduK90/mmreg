@@ -23,14 +23,16 @@ pub enum MmregError {
         status: String,
         status_path: PathBuf,
     },
-    /// Owning device's runtime power management (`power/runtime_status`) is `"suspended"`, `"suspending"`, or `"error"`.
+    /// Owning device's runtime power management (`power/runtime_status`) is `"error"`, or, once the
+    /// device is opened (and so should have been resumed), anything but `"active"` or `"unsupported"`.
     ZombieRuntimePm {
         device_name: String,
         status: String,
         pm_path: PathBuf,
         device_path: PathBuf,
     },
-    /// Upstream clock/power/reset supplier (`supplier:*`) is `"suspended"`, `"suspending"`, or `"error"`.
+    /// Upstream clock/power/reset supplier (`supplier:*`) is `"error"`, or, once the device is opened,
+    /// not `"active"` / `"unsupported"` while its device link is runtime-PM managed.
     ZombieSupplierPm {
         device_name: String,
         supplier_name: String,
@@ -239,8 +241,8 @@ impl fmt::Display for MmregError {
             } => write!(
                 f,
                 "[{}] Hardware Pre-Flight failed (Zombie Hardware): Device '{}' power/clock domain is '{}' at '{}'. \
-                 Accessing a suspended peripheral can hang the AXI/system bus. \
-                 Remediation: Wake the device (`echo on | sudo tee {}/power/control`), ensure its driver has active clocks, or pass --force to override.",
+                 The kernel could not resume it, and accessing a suspended peripheral can hang the AXI/system bus. \
+                 Remediation: Check `dmesg` for runtime PM errors, wake the device (`echo on | sudo tee {}/power/control`), ensure its driver has active clocks, or pass --force to override.",
                 code,
                 device_name,
                 status,
@@ -255,7 +257,7 @@ impl fmt::Display for MmregError {
             } => write!(
                 f,
                 "[{}] Hardware Pre-Flight failed (Zombie Hardware): Upstream clock/power supplier '{}' for device '{}' is '{}' at '{}'. \
-                 Remediation: Ensure upstream clock/power controller is active before accessing '{}', or pass --force to override.",
+                 Remediation: Check `dmesg` for runtime PM errors, ensure the upstream clock/power controller is active before accessing '{}', or pass --force to override.",
                 code,
                 supplier_name,
                 device_name,
